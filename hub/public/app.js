@@ -21,5 +21,29 @@ async function update() { $('refresh').disabled = true; try { const data = await
 $('refresh').onclick = update; document.querySelectorAll('.tab').forEach((t) => t.onclick = () => { document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x === t)); document.querySelectorAll('.view').forEach((x) => x.classList.toggle('active', x.id === t.dataset.view)); });
 document.addEventListener('click', async (e) => { const open = e.target.closest('[data-open-form]'), close = e.target.closest('[data-close-form]'); if (open) $(open.dataset.openForm).classList.remove('hidden'); if (close) $(close.dataset.closeForm).classList.add('hidden'); const save = e.target.closest('[data-save-assignment]'); if (save) { const id = save.dataset.saveAssignment, selected = document.querySelector(`[data-printer="${id}"]`).value; try { if (selected) await api('/api/assignments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: id, spool_id: selected }) }); else await fetch(`/api/assignments/${id}`, { method: 'DELETE' }); toast('Bobine atualizada.'); update(); } catch (err) { toast(err.message, 'error'); } } const use = e.target.closest('[data-consume]'); if (use) { const grams = prompt('Gramas consumidos:', '0'); if (Number(grams) > 0) try { await api('/api/consume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: use.dataset.consume, spool_id: use.dataset.spool, grams: Number(grams) }) }); toast('Consumo registado.'); update(); } catch (err) { toast(err.message, 'error'); } } const complete = e.target.closest('[data-complete-order]'); if (complete) try { const result = await api(`/api/orders/${complete.dataset.completeOrder}/complete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); toast(result.consumed_grams ? `Concluída; ${result.consumed_grams} g descontados.` : 'Encomenda concluída.'); update(); } catch (err) { toast(err.message, 'error'); } });
 document.addEventListener('change', async (e) => { if (e.target.matches('[data-order-printer]')) try { await api(`/api/orders/${e.target.dataset.orderPrinter}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: e.target.value || null, status: e.target.value ? 'queued' : 'received' }) }); toast('Impressora atribuída.'); update(); } catch (err) { toast(err.message, 'error'); } if (e.target.matches('[data-file-order]') && e.target.files[0]) { const form = new FormData(); form.append('gcode', e.target.files[0]); const q = prompt('Quantidade de peças (obrigatória se não estiver no G-code):', ''); const material = prompt('Material (obrigatório se não estiver no G-code):', ''); const nozzle = prompt('Bico em mm, ex.: 0.4 (obrigatório se não estiver no G-code):', ''); if (q) form.append('quantity', q); if (material) form.append('material', material); if (nozzle) form.append('nozzle', nozzle); try { const result = await api(`/api/orders/${e.target.dataset.fileOrder}/files`, { method: 'POST', body: form }); toast(result.metadata.valid ? 'G-code validado.' : `G-code guardado; falta: ${result.metadata.missing.join(', ')}.`, result.metadata.valid ? 'success' : 'error'); update(); } catch (err) { toast(err.message, 'error'); } } });
-for (const id of ['order-form', 'project-form', 'printer-form', 'spool-form']) $(id).addEventListener('submit', async (e) => { e.preventDefault(); const form = Object.fromEntries(new FormData(e.currentTarget).entries()); const endpoint = id === 'order-form' ? '/api/orders' : id === 'project-form' ? '/api/projects' : id === 'printer-form' ? '/api/printers' : '/api/spools'; try { await api(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) }); e.currentTarget.reset(); e.currentTarget.classList.add('hidden'); toast('Registo criado.'); update(); } catch (err) { toast(err.message, 'error'); } });
+for (const id of ['order-form', 'project-form', 'printer-form', 'spool-form']) $(id).addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const values = new FormData(e.currentTarget);
+  const form = Object.fromEntries(values.entries());
+  const endpoint = id === 'order-form' ? '/api/orders' : id === 'project-form' ? '/api/projects' : id === 'printer-form' ? '/api/printers' : '/api/spools';
+  try {
+    if (id === 'order-form') {
+      const pdf = values.get('order_pdf');
+      delete form.order_pdf;
+      if (pdf instanceof File && pdf.size) {
+        const upload = new FormData(); upload.append('pdf', pdf);
+        const draft = await api('/api/orders/import-pdf', { method: 'POST', body: upload });
+        form.title = form.title || (draft.order_number ? `Encomenda ${draft.order_number}` : pdf.name.replace(/\.pdf$/i, ''));
+        form.customer = form.customer || draft.customer || '';
+        form.items = draft.items || [];
+        form.document = { file_name: draft.file_name, order_number: draft.order_number || null, ocr_used: Boolean(draft.ocr_used), imported_at: new Date().toISOString() };
+        if (draft.warnings?.length) form.notes = [form.notes, `PDF: ${draft.warnings.join(' ')}`].filter(Boolean).join('\n');
+        toast(draft.ocr_used ? 'PDF lido por OCR.' : 'Texto do PDF lido automaticamente.');
+      }
+      if (!String(form.title || '').trim()) throw new Error('Indica um nome ou seleciona um PDF com referência.');
+    }
+    await api(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
+    e.currentTarget.reset(); e.currentTarget.classList.add('hidden'); toast('Registo criado.'); update();
+  } catch (err) { toast(err.message, 'error'); }
+});
 populateFilaments(); update(); setInterval(update, 15000);

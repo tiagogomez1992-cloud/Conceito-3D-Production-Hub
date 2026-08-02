@@ -5,6 +5,8 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const multer = require('multer');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 
 const app = express();
 const port = Number(process.env.PORT || 8080);
@@ -16,6 +18,7 @@ const uploadsDir = path.join(dataDir, 'uploads');
 const stateFile = path.join(dataDir, 'portal-state.json');
 const authUser = process.env.HUB_AUTH_USER || '';
 const authPassword = process.env.HUB_AUTH_PASSWORD || '';
+const execFileAsync = promisify(execFile);
 
 fs.mkdirSync(uploadsDir, { recursive: true });
 app.use(express.json({ limit: '256kb' }));
@@ -49,6 +52,15 @@ const upload = multer({
   },
 });
 
+const pdfUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 12 * 1024 * 1024 },
+  fileFilter: (_req, file, done) => {
+    const accepted = path.extname(file.originalname).toLowerCase() === '.pdf';
+    done(accepted ? null : new Error('Seleciona um documento PDF vÃ¡lido.'), accepted);
+  },
+});
+
 function gcodeMetadata(contents, supplied = {}) {
   const find = (patterns) => patterns.map((pattern) => contents.match(pattern)?.[1]?.trim()).find(Boolean) || null;
   const quantity = number(supplied.quantity) || number(find([/(?:quantidade|quantity|copies|pieces|peças|objects?)\s*[:=]\s*(\d+)/im]));
@@ -57,6 +69,58 @@ function gcodeMetadata(contents, supplied = {}) {
   const filament = number(find([/(?:total filament used \[g\]|filament used \[g\]|filament_weight_total)\s*[:=]\s*([0-9]+(?:[\.,][0-9]+)?)/im]));
   const missing = []; if (!quantity) missing.push('quantidade de peças'); if (!material) missing.push('tipo de material'); if (!nozzle) missing.push('tamanho do bico');
   return { quantity, material, nozzle, filament_grams: filament, valid: !missing.length, missing };
+}
+
+function pdfValue(text, patterns) {
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return clean(match[1].replace(/\s+/g, ' '), 120);
+  }
+  return '';
+}
+
+function pdfItems(text) {
+  const seen = new Set();
+  return text.split(/\r?\n/).flatMap((line) => {
+    const match = line.match(/^\s*([A-Z0-9][A-Z0-9._/-]{1,})\s+(?:[^\d\n]{0,80}\s+)?(?:x|qtd\.?|qty\.?|quantidade\s*)?(\d{1,5})\s*$/i);
+    if (!match) return [];
+    const partCode = match[1].toUpperCase(); const quantity = Number(match[2]);
+    const key = `${partCode}:${quantity}`;
+    if (!quantity || seen.has(key)) return [];
+    seen.add(key); return [{ part_code: partCode, quantity }];
+  });
+}
+
+function draftFromPdfText(text) {
+  const customer = pdfValue(text, [/(?:cliente|customer|company|empresa|destinat[aÃ¡]rio)\s*(?:n[.ÂºoÂ°]*)?\s*[:#-]\s*([^\r\n]{2,120})/i]);
+  const orderNumber = pdfValue(text, [/(?:n[.ÂºoÂ°]*\s*)?(?:de\s*)?(?:encomenda|order(?:\s*(?:number|no\.?))?)\s*[:#-]\s*([a-z0-9][a-z0-9./_-]{1,})/i]);
+  const items = pdfItems(text);
+  const warnings = [];
+  if (!customer) warnings.push('Cliente nÃ£o identificado automaticamente.');
+  if (!orderNumber) warnings.push('NÃºmero de encomenda nÃ£o identificado automaticamente.');
+  if (!items.length) warnings.push('NÃ£o foram identificadas referÃªncias e quantidades; confirme manualmente.');
+  return { customer, order_number: orderNumber, items, warnings };
+}
+
+async function extractPdfOrder(pdf) {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'c3d-order-pdf-'));
+  const input = path.join(temporary, 'encomenda.pdf');
+  fs.writeFileSync(input, pdf);
+  try {
+    let text = '';
+    try { text = String((await execFileAsync('pdftotext', ['-layout', input, '-'], { maxBuffer: 4 * 1024 * 1024 })).stdout || ''); } catch { /* a digitalized PDF has no text layer */ }
+    let draft = draftFromPdfText(text);
+    let ocrUsed = false;
+    const score = (value) => Number(Boolean(value.customer)) + Number(Boolean(value.order_number)) + value.items.length * 2;
+    if (score(draft) < 3) {
+      await execFileAsync('pdftoppm', ['-f', '1', '-l', '2', '-r', '180', '-png', input, path.join(temporary, 'page')], { maxBuffer: 4 * 1024 * 1024 });
+      const pages = fs.readdirSync(temporary).filter((file) => /^page-\d+\.png$/i.test(file)).sort();
+      const ocrText = (await Promise.all(pages.map(async (page) => String((await execFileAsync('tesseract', [path.join(temporary, page), 'stdout', '-l', 'por+eng'], { maxBuffer: 4 * 1024 * 1024 })).stdout || '')))).join('\n');
+      const fromOcr = draftFromPdfText(ocrText);
+      if (score(fromOcr) >= score(draft)) { draft = fromOcr; ocrUsed = true; }
+    }
+    return { ...draft, ocr_used: ocrUsed };
+  } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
 }
 
 async function safeGet(url) { try { const response = await client.get(url); return { ok: true, data: response.data }; } catch (error) { return { ok: false, error: error.message }; } }
@@ -73,9 +137,18 @@ app.get('/api/summary', async (_req, res) => {
 });
 
 app.get('/api/orders', (_req, res) => res.json(state().orders));
+app.post('/api/orders/import-pdf', pdfUpload.single('pdf'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Seleciona um PDF de encomenda.' });
+  try {
+    const draft = await extractPdfOrder(req.file.buffer);
+    res.json({ file_name: clean(req.file.originalname, 255), ...draft });
+  } catch (error) {
+    res.status(422).json({ error: `NÃ£o foi possÃ­vel ler o PDF: ${error.message || 'erro desconhecido'}` });
+  }
+});
 app.post('/api/orders', (req, res) => {
   if (!clean(req.body?.title, 120)) return res.status(400).json({ error: 'O nome da encomenda é obrigatório.' });
-  const saved = state(); const item = { id: orderId(), title: clean(req.body.title, 120), customer: clean(req.body.customer, 120), due_date: clean(req.body.due_date, 20) || null, priority: Math.min(2, Math.max(0, Number(req.body.priority) || 0)), notes: clean(req.body.notes, 1000), status: 'received', printer_id: null, files: [], created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+  const saved = state(); const item = { id: orderId(), title: clean(req.body.title, 120), customer: clean(req.body.customer, 120), due_date: clean(req.body.due_date, 20) || null, priority: Math.min(2, Math.max(0, Number(req.body.priority) || 0)), notes: clean(req.body.notes, 1000), status: 'received', printer_id: null, files: [], items: Array.isArray(req.body.items) ? req.body.items.slice(0, 100) : [], document: req.body.document || null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
   saved.orders.unshift(item); save(saved); res.status(201).json(item);
 });
 app.patch('/api/orders/:id', (req, res) => {
