@@ -1,216 +1,25 @@
-const byId = (id) => document.getElementById(id);
-let latest = { printers: [], spools: [], assignments: {}, filaments: [] };
-
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
+const $ = (id) => document.getElementById(id);
+let latest = { printers: [], spools: [], assignments: {}, orders: [] };
+const escape = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
+const value = (v, fallback = '—') => v === undefined || v === null || v === '' ? fallback : escape(v);
+const statusClass = (v) => String(v || '').toLowerCase() === 'printing' ? 'printing' : ['idle', 'finished', 'online', 'paused', 'completed'].includes(String(v || '').toLowerCase()) ? 'online' : 'offline';
+const spoolInfo = (spool) => ({ material: spool?.filament?.material || spool?.filament?.name || 'Material não definido', remaining: Math.round(Number(spool?.remaining_weight || 0)) });
+const assigned = (id) => latest.spools.find((spool) => Number(spool.id) === Number(latest.assignments?.[String(id)]?.spool_id));
+function toast(message, kind = 'success') { const t = $('toast'); t.textContent = message; t.className = `toast show ${kind}`; clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.className = 'toast'; }, 4200); }
+async function api(url, options = {}) { const r = await fetch(url, options); const body = await r.json().catch(() => ({})); if (!r.ok) throw new Error(body.error || 'O pedido não foi aceite.'); return body; }
+function selectOptions(selected) { return ['<option value="">Sem bobine atribuída</option>', ...latest.spools.map((s) => `<option value="${s.id}" ${Number(selected) === Number(s.id) ? 'selected' : ''}>#${s.id} · ${escape(spoolInfo(s).material)} · ${spoolInfo(s).remaining} g</option>`)].join(''); }
+function renderPrinters(items) {
+  $('printer-list').innerHTML = items.length ? items.map((p) => { const progress = Number(p.job_progress || 0) * (Number(p.job_progress || 0) <= 1 ? 100 : 1); return `<div class="printer-row"><span class="status ${statusClass(p.status)}"></span><div class="printer-name"><strong>${value(p.name, 'Sem nome')}</strong><small>${value(p.model || p.type, 'Impressora')}</small></div><div class="job"><strong>${value(p.job_name, 'Sem trabalho ativo')}</strong><small>${progress ? `${Math.round(progress)}%` : value(p.status)}</small></div><span class="badge ${statusClass(p.status)}">${value(p.status)}</span></div>`; }).join('') : '<p class="empty">Ainda não há impressoras configuradas.</p>';
+  $('printer-grid').innerHTML = items.length ? items.map((p) => { const spool = assigned(p.id); const a = latest.assignments?.[String(p.id)]; return `<article class="machine-card"><div class="machine-top"><div><span class="status ${statusClass(p.status)}"></span><strong>${value(p.name, 'Sem nome')}</strong></div><span class="badge ${statusClass(p.status)}">${value(p.status)}</span></div><dl><div><dt>Modelo</dt><dd>${value(p.model)}</dd></div><div><dt>Trabalho</dt><dd>${value(p.job_name, 'Sem trabalho ativo')}</dd></div><div><dt>Bobine</dt><dd>${spool ? `#${spool.id} · ${escape(spoolInfo(spool).material)} · ${spoolInfo(spool).remaining} g` : 'Não atribuída'}</dd></div></dl><div class="machine-actions"><label>Trocar bobine<select class="assignment-select" data-printer="${p.id}">${selectOptions(a?.spool_id)}</select></label><button class="compact" data-save-assignment="${p.id}">Guardar</button>${spool ? `<button class="compact secondary" data-consume="${p.id}" data-spool="${spool.id}">Registar consumo</button>` : ''}</div></article>`; }).join('') : '<p class="empty">Ainda não há impressoras configuradas.</p>';
 }
+function renderSpools() { $('spool-grid').innerHTML = latest.spools.length ? latest.spools.map((s) => { const info = spoolInfo(s); const low = info.remaining > 0 && info.remaining < 200; return `<article class="spool-card"><div class="spool-swatch" style="background:${escape(s.filament?.color_hex || '#6f747a')}"></div><div><p class="eyebrow">BOBINE #${s.id}</p><h2>${escape(info.material)}</h2><p>${escape(s.filament?.vendor?.name || 'Sem fabricante')}</p></div><div class="spool-weight ${low ? 'low' : ''}"><strong>${info.remaining || 'Sem peso'}${info.remaining ? ' g' : ''}</strong><small>${low ? 'Abaixo de 200 g' : 'Disponível'}</small></div></article>`; }).join('') : '<p class="empty">Ainda não há bobines no Spoolman.</p>'; }
+function renderProduction(projects, jobs) { $('jobs-count').textContent = `${jobs.length} total`; $('projects-count').textContent = `${projects.length} total`; $('job-list').innerHTML = jobs.length ? jobs.slice(0, 12).map((j) => `<div class="data-row"><div><strong>${value(j.part_name || j.name, `Trabalho #${j.id}`)}</strong><small>${value(j.printer_name, 'Impressora não atribuída')}</small></div><span class="badge ${statusClass(j.status)}">${value(j.status)}</span></div>`).join('') : '<p class="empty">Ainda não existem trabalhos.</p>'; $('project-list').innerHTML = projects.length ? projects.slice(0, 12).map((p) => `<div class="data-row"><div><strong>${value(p.name, `Projeto #${p.id}`)}</strong><small>${value(p.description, 'Sem descrição')}</small></div><span class="badge ${Number(p.priority) > 1 ? 'printing' : statusClass(p.status)}">${Number(p.priority) > 1 ? 'urgente' : value(p.status)}</span></div>`).join('') : '<p class="empty">Ainda não existem projetos.</p>'; }
+function renderOrders() { $('orders-total').textContent = latest.orders.filter((o) => o.status !== 'completed').length; $('orders-urgent').textContent = `${latest.orders.filter((o) => Number(o.priority) === 2 && o.status !== 'completed').length} urgentes`; $('order-board').innerHTML = latest.orders.length ? latest.orders.map((o) => { const file = o.files?.[0]; const meta = file?.metadata; const printerOptions = ['<option value="">Atribuir impressora</option>', ...latest.printers.map((p) => `<option value="${p.id}" ${Number(o.printer_id) === Number(p.id) ? 'selected' : ''}>${escape(p.name)}</option>`)].join(''); return `<article class="order-card ${Number(o.priority) === 2 ? 'urgent' : ''}"><div class="order-top"><div><p class="eyebrow">${escape(o.id)}</p><h2>${escape(o.title)}</h2><p>${escape(o.customer || 'Sem cliente')} · ${o.due_date ? escape(o.due_date) : 'Sem prazo'}</p></div><span class="badge ${o.status === 'completed' ? 'online' : Number(o.priority) === 2 ? 'printing' : 'offline'}">${escape(o.status)}</span></div><div class="order-meta">${meta ? `<span>${meta.valid ? '✓ Metadados validados' : `⚠ Falta: ${escape(meta.missing.join(', '))}`}</span><span>${meta.quantity || '—'} peças · ${escape(meta.material || '—')} · bico ${meta.nozzle || '—'} mm</span>` : '<span>Sem G-code</span>'}</div><div class="order-actions"><label>Impressora<select data-order-printer="${escape(o.id)}">${printerOptions}</select></label><label class="file-upload">G-code<input type="file" accept=".gcode,.gco" data-file-order="${escape(o.id)}"><span>Enviar G-code</span></label>${o.status !== 'completed' ? `<button class="compact" data-complete-order="${escape(o.id)}">Concluir</button>` : ''}</div></article>`; }).join('') : '<p class="empty">Ainda não existem encomendas.</p>'; }
+async function populateFilaments() { try { const data = await api('/api/filaments'); $('filament-select').innerHTML = ['<option value="">Selecionar filamento</option>', ...data.map((f) => `<option value="${f.id}">${escape([f.vendor?.name, f.name || f.material, f.color_name || f.color_hex].filter(Boolean).join(' · '))}</option>`)].join(''); } catch { $('filament-select').innerHTML = '<option>Spoolman indisponível</option>'; } }
+async function update() { $('refresh').disabled = true; try { const data = await api('/api/summary'); latest = { printers: data.printers.items, spools: data.spools.items, assignments: data.assignments || {}, orders: data.production.orders || [] }; $('printers-total').textContent = data.printers.total; $('printers-online').textContent = `${data.printers.online} online`; $('printers-printing').textContent = data.printers.printing; $('spools-total').textContent = data.spools.total; $('spools-low').textContent = data.spools.low ? `${data.spools.low} abaixo de 200 g` : 'Sem alertas'; $('live-dot').className = data.services.printFarmManager && data.services.spoolman ? 'connected' : 'warning'; $('last-update').textContent = `Atualizado às ${new Date(data.generatedAt).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })}`; $('system-host').textContent = data.system.hostname; $('system-up').textContent = `${Math.floor(data.system.uptime_seconds / 3600)} h ativo`; $('system-memory').textContent = `${data.system.memory_used_mb} MB`; $('system-load').textContent = data.system.cpu_load_1m; renderPrinters(latest.printers); renderSpools(); renderProduction(data.production.projects, data.production.jobs); renderOrders(); } catch (e) { $('last-update').textContent = 'Não foi possível contactar os serviços'; $('live-dot').className = 'warning'; } finally { $('refresh').disabled = false; } }
 
-function text(value, fallback = '—') {
-  return value === null || value === undefined || value === '' ? fallback : escapeHtml(value);
-}
-
-function statusClass(status) {
-  const normalized = String(status || 'UNKNOWN').toLowerCase();
-  if (normalized === 'printing') return 'printing';
-  if (['idle', 'finished', 'online', 'paused'].includes(normalized)) return 'online';
-  return 'offline';
-}
-
-function progressFor(printer) {
-  const value = Number(printer.job_progress || 0);
-  return value * (value <= 1 ? 100 : 1);
-}
-
-function spoolMaterial(spool) {
-  const filament = spool.filament || {};
-  return {
-    material: filament.material || filament.name || spool.material || 'Material não definido',
-    color: filament.color_hex || filament.color || spool.color_hex || '#6f747a',
-    vendor: filament.vendor?.name || spool.vendor?.name || 'Sem fabricante',
-  };
-}
-
-function assignedSpool(printerId) {
-  const assignment = latest.assignments?.[String(printerId)];
-  return assignment ? latest.spools.find((spool) => Number(spool.id) === Number(assignment.spool_id)) : null;
-}
-
-function spoolOptions(selectedId) {
-  return ['<option value="">Sem bobine atribuída</option>', ...latest.spools.map((spool) => {
-    const { material } = spoolMaterial(spool);
-    const remaining = Math.round(Number(spool.remaining_weight || 0));
-    const selected = Number(selectedId) === Number(spool.id) ? ' selected' : '';
-    return `<option value="${Number(spool.id)}"${selected}>#${Number(spool.id)} · ${escapeHtml(material)} · ${remaining} g</option>`;
-  })].join('');
-}
-
-function renderPrinters(printers) {
-  const container = byId('printer-list');
-  if (!printers.length) {
-    container.innerHTML = '<p class="empty">Ainda não há impressoras configuradas.</p>';
-    return;
-  }
-  container.innerHTML = printers.map((printer) => {
-    const status = printer.status || 'UNKNOWN';
-    const progress = progressFor(printer);
-    return `<div class="printer-row"><span class="status ${statusClass(status)}"></span><div class="printer-name"><strong>${text(printer.name, 'Sem nome')}</strong><small>${text(printer.model || printer.type, 'Impressora')}</small></div><div class="job"><strong>${text(printer.job_name, 'Sem trabalho ativo')}</strong><small>${progress ? `${Math.round(progress)}%` : text(status)}</small></div><span class="badge ${statusClass(status)}">${text(status)}</span></div>`;
-  }).join('');
-}
-
-function renderPrinterGrid(printers) {
-  const container = byId('printer-grid');
-  if (!printers.length) {
-    container.innerHTML = '<p class="empty">Ainda não há impressoras configuradas. Usa o botão “Adicionar impressora”.</p>';
-    return;
-  }
-  container.innerHTML = printers.map((printer) => {
-    const status = printer.status || 'UNKNOWN';
-    const progress = progressFor(printer);
-    const spool = assignedSpool(printer.id);
-    const assignment = latest.assignments?.[String(printer.id)];
-    const spoolName = spool ? `#${spool.id} · ${spoolMaterial(spool).material} · ${Math.round(Number(spool.remaining_weight || 0))} g` : 'Não atribuída';
-    return `<article class="machine-card"><div class="machine-top"><div><span class="status ${statusClass(status)}"></span><strong>${text(printer.name, 'Sem nome')}</strong></div><span class="badge ${statusClass(status)}">${text(status)}</span></div><dl><div><dt>Modelo</dt><dd>${text(printer.model)}</dd></div><div><dt>Material carregado</dt><dd>${[printer.loaded_material, printer.loaded_color].filter(Boolean).map(escapeHtml).join(' · ') || 'Não definido'}</dd></div><div><dt>Trabalho</dt><dd>${text(printer.job_name, 'Sem trabalho ativo')}</dd></div><div><dt>Progresso</dt><dd>${progress ? `${Math.round(progress)}%` : '—'}</dd></div><div><dt>Bobine atribuída</dt><dd>${escapeHtml(spoolName)}</dd></div></dl><div class="machine-actions"><label>Trocar bobine<select class="assignment-select" data-printer-id="${Number(printer.id)}">${spoolOptions(assignment?.spool_id)}</select></label><button class="compact" data-save-assignment="${Number(printer.id)}">Guardar</button>${spool ? `<button class="compact secondary" data-consume-printer="${Number(printer.id)}" data-spool-id="${Number(spool.id)}">Registar consumo</button>` : ''}</div></article>`;
-  }).join('');
-}
-
-function renderSpools(spools) {
-  const container = byId('spool-grid');
-  if (!spools.length) {
-    container.innerHTML = '<p class="empty">Ainda não há bobines no Spoolman. Adiciona a primeira através de “Adicionar bobine”.</p>';
-    return;
-  }
-  container.innerHTML = spools.map((spool) => {
-    const { material, color, vendor } = spoolMaterial(spool);
-    const remaining = Number(spool.remaining_weight || 0);
-    const low = remaining > 0 && remaining < 200;
-    const printers = latest.printers.filter((printer) => Number(latest.assignments?.[String(printer.id)]?.spool_id) === Number(spool.id)).map((printer) => printer.name).join(', ');
-    return `<article class="spool-card"><div class="spool-swatch" style="background:${escapeHtml(color)}"></div><div><p class="eyebrow">BOBINE #${Number(spool.id)}</p><h2>${escapeHtml(material)}</h2><p>${escapeHtml(vendor)}${printers ? ` · Em: ${escapeHtml(printers)}` : ''}</p></div><div class="spool-weight ${low ? 'low' : ''}"><strong>${remaining ? `${Math.round(remaining)} g` : 'Sem peso'}</strong><small>${low ? 'Abaixo de 200 g' : 'Disponível'}</small></div></article>`;
-  }).join('');
-}
-
-function statusLabel(status) { return escapeHtml(String(status || 'unknown').replace(/_/g, ' ')); }
-
-function renderProduction(projects, jobs) {
-  const orderedProjects = [...projects].sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0));
-  byId('jobs-count').textContent = `${jobs.length} total`;
-  byId('projects-count').textContent = `${projects.length} total`;
-  byId('job-list').innerHTML = jobs.length ? jobs.slice(0, 12).map((job) => `<div class="data-row"><div><strong>${text(job.part_name || job.name, `Trabalho #${job.id}`)}</strong><small>${text(job.printer_name, 'Impressora não atribuída')}</small></div><span class="badge ${statusClass(job.status)}">${statusLabel(job.status)}</span></div>`).join('') : '<p class="empty">Ainda não existem trabalhos na fila.</p>';
-  byId('project-list').innerHTML = orderedProjects.length ? orderedProjects.slice(0, 12).map((project) => `<div class="data-row"><div><strong>${text(project.name, `Projeto #${project.id}`)}</strong><small>${text(project.description, 'Sem descrição')}</small></div><span class="badge ${Number(project.priority) > 1 ? 'printing' : statusClass(project.status)}">${Number(project.priority) > 1 ? 'urgente' : statusLabel(project.status)}</span></div>`).join('') : '<p class="empty">Ainda não existem projetos criados.</p>';
-}
-
-function toast(message, kind = 'success') {
-  const element = byId('toast');
-  element.textContent = message;
-  element.className = `toast show ${kind}`;
-  window.clearTimeout(toast.timer);
-  toast.timer = window.setTimeout(() => { element.className = 'toast'; }, 4500);
-}
-
-async function request(url, options) {
-  const response = await fetch(url, options);
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || 'O pedido não foi aceite.');
-  return payload;
-}
-
-async function populateFilaments() {
-  try {
-    const filaments = await request('/api/filaments');
-    latest.filaments = filaments;
-    byId('filament-select').innerHTML = ['<option value="">Selecionar filamento</option>', ...filaments.map((filament) => {
-      const label = [filament.vendor?.name, filament.name || filament.material, filament.color_name || filament.color_hex].filter(Boolean).join(' · ');
-      return `<option value="${Number(filament.id)}">${escapeHtml(label || `Filamento #${filament.id}`)}</option>`;
-    })].join('');
-  } catch (_) {
-    byId('filament-select').innerHTML = '<option value="">Spoolman indisponível</option>';
-  }
-}
-
-async function update() {
-  const refresh = byId('refresh');
-  refresh.disabled = true;
-  try {
-    const response = await fetch('/api/summary', { cache: 'no-store' });
-    if (!response.ok) throw new Error('Não foi possível obter o resumo');
-    const data = await response.json();
-    latest = { printers: data.printers.items, spools: data.spools.items, assignments: data.assignments || {}, filaments: latest.filaments };
-    byId('printers-total').textContent = data.printers.total;
-    byId('printers-online').textContent = `${data.printers.online} online`;
-    byId('printers-printing').textContent = data.printers.printing;
-    byId('spools-total').textContent = data.spools.total;
-    byId('spools-low').textContent = data.spools.low ? `${data.spools.low} abaixo de 200 g` : 'Sem alertas de peso';
-    const services = [data.services.printFarmManager, data.services.spoolman].filter(Boolean).length;
-    byId('services-status').textContent = `${services}/2`;
-    byId('live-dot').className = services === 2 ? 'connected' : 'warning';
-    byId('last-update').textContent = `Atualizado às ${new Date(data.generatedAt).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })}`;
-    renderPrinters(latest.printers);
-    renderPrinterGrid(latest.printers);
-    renderSpools(latest.spools);
-    renderProduction(data.production.projects, data.production.jobs);
-  } catch (_) {
-    byId('live-dot').className = 'warning';
-    byId('last-update').textContent = 'Não foi possível contactar os serviços';
-  } finally { refresh.disabled = false; }
-}
-
-byId('refresh').addEventListener('click', update);
-document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => {
-  document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === tab));
-  document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === tab.dataset.view));
-}));
-document.addEventListener('click', async (event) => {
-  const open = event.target.closest('[data-open-form]');
-  const close = event.target.closest('[data-close-form]');
-  if (open) byId(open.dataset.openForm).classList.remove('hidden');
-  if (close) byId(close.dataset.closeForm).classList.add('hidden');
-  const save = event.target.closest('[data-save-assignment]');
-  if (save) {
-    const printerId = Number(save.dataset.saveAssignment);
-    const select = document.querySelector(`.assignment-select[data-printer-id="${printerId}"]`);
-    try {
-      if (!select.value) await fetch(`/api/assignments/${printerId}`, { method: 'DELETE' });
-      else await request('/api/assignments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: printerId, spool_id: Number(select.value) }) });
-      toast('Bobine atribuída à impressora.');
-      update();
-    } catch (error) { toast(error.message, 'error'); }
-  }
-  const consume = event.target.closest('[data-consume-printer]');
-  if (consume) {
-    const grams = window.prompt('Quantos gramas foram consumidos?', '0');
-    if (!grams || Number(grams) <= 0) return;
-    try {
-      await request('/api/consume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: Number(consume.dataset.consumePrinter), spool_id: Number(consume.dataset.spoolId), grams: Number(grams) }) });
-      toast('Consumo registado no Spoolman.');
-      update();
-    } catch (error) { toast(error.message, 'error'); }
-  }
-});
-
-byId('printer-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  try {
-    await request('/api/printers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.fromEntries(form.entries())) });
-    event.currentTarget.reset(); event.currentTarget.classList.add('hidden'); toast('Impressora adicionada.'); update();
-  } catch (error) { toast(error.message, 'error'); }
-});
-byId('project-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const form = Object.fromEntries(new FormData(event.currentTarget).entries()); form.priority = Number(form.priority);
-  try {
-    await request('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
-    event.currentTarget.reset(); event.currentTarget.classList.add('hidden'); toast('Projeto criado e colocado na fila.'); update();
-  } catch (error) { toast(error.message, 'error'); }
-});
-byId('spool-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const form = Object.fromEntries(new FormData(event.currentTarget).entries());
-  try {
-    await request('/api/spools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
-    event.currentTarget.reset(); event.currentTarget.classList.add('hidden'); toast('Bobine criada no Spoolman.'); update();
-  } catch (error) { toast(error.message, 'error'); }
-});
-
-populateFilaments();
-update();
-setInterval(update, 15000);
+$('refresh').onclick = update; document.querySelectorAll('.tab').forEach((t) => t.onclick = () => { document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x === t)); document.querySelectorAll('.view').forEach((x) => x.classList.toggle('active', x.id === t.dataset.view)); });
+document.addEventListener('click', async (e) => { const open = e.target.closest('[data-open-form]'), close = e.target.closest('[data-close-form]'); if (open) $(open.dataset.openForm).classList.remove('hidden'); if (close) $(close.dataset.closeForm).classList.add('hidden'); const save = e.target.closest('[data-save-assignment]'); if (save) { const id = save.dataset.saveAssignment, selected = document.querySelector(`[data-printer="${id}"]`).value; try { if (selected) await api('/api/assignments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: id, spool_id: selected }) }); else await fetch(`/api/assignments/${id}`, { method: 'DELETE' }); toast('Bobine atualizada.'); update(); } catch (err) { toast(err.message, 'error'); } } const use = e.target.closest('[data-consume]'); if (use) { const grams = prompt('Gramas consumidos:', '0'); if (Number(grams) > 0) try { await api('/api/consume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: use.dataset.consume, spool_id: use.dataset.spool, grams: Number(grams) }) }); toast('Consumo registado.'); update(); } catch (err) { toast(err.message, 'error'); } } const complete = e.target.closest('[data-complete-order]'); if (complete) try { const result = await api(`/api/orders/${complete.dataset.completeOrder}/complete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); toast(result.consumed_grams ? `Concluída; ${result.consumed_grams} g descontados.` : 'Encomenda concluída.'); update(); } catch (err) { toast(err.message, 'error'); } });
+document.addEventListener('change', async (e) => { if (e.target.matches('[data-order-printer]')) try { await api(`/api/orders/${e.target.dataset.orderPrinter}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: e.target.value || null, status: e.target.value ? 'queued' : 'received' }) }); toast('Impressora atribuída.'); update(); } catch (err) { toast(err.message, 'error'); } if (e.target.matches('[data-file-order]') && e.target.files[0]) { const form = new FormData(); form.append('gcode', e.target.files[0]); const q = prompt('Quantidade de peças (obrigatória se não estiver no G-code):', ''); const material = prompt('Material (obrigatório se não estiver no G-code):', ''); const nozzle = prompt('Bico em mm, ex.: 0.4 (obrigatório se não estiver no G-code):', ''); if (q) form.append('quantity', q); if (material) form.append('material', material); if (nozzle) form.append('nozzle', nozzle); try { const result = await api(`/api/orders/${e.target.dataset.fileOrder}/files`, { method: 'POST', body: form }); toast(result.metadata.valid ? 'G-code validado.' : `G-code guardado; falta: ${result.metadata.missing.join(', ')}.`, result.metadata.valid ? 'success' : 'error'); update(); } catch (err) { toast(err.message, 'error'); } } });
+for (const id of ['order-form', 'project-form', 'printer-form', 'spool-form']) $(id).addEventListener('submit', async (e) => { e.preventDefault(); const form = Object.fromEntries(new FormData(e.currentTarget).entries()); const endpoint = id === 'order-form' ? '/api/orders' : id === 'project-form' ? '/api/projects' : id === 'printer-form' ? '/api/printers' : '/api/spools'; try { await api(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) }); e.currentTarget.reset(); e.currentTarget.classList.add('hidden'); toast('Registo criado.'); update(); } catch (err) { toast(err.message, 'error'); } });
+populateFilaments(); update(); setInterval(update, 15000);

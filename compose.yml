@@ -9,6 +9,8 @@ services:
       PORT: 8080
       PRINT_FARM_URL: http://print-farm-manager:3000
       SPOOLMAN_URL: http://spoolman:8000
+      HUB_AUTH_USER: ${HUB_AUTH_USER:-}
+      HUB_AUTH_PASSWORD: ${HUB_AUTH_PASSWORD:-}
     volumes:
       - hub-data:/app/data
     depends_on:

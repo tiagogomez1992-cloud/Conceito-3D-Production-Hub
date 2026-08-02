@@ -1,0 +1,10 @@
+[Unit]
+Description=Backup diário dos dados do Conceito 3D Production Hub
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/c3d-hub-backup
+StandardOutput=append:/var/log/conceito3d-hub-backup.log
+StandardError=append:/var/log/conceito3d-hub-backup.log
