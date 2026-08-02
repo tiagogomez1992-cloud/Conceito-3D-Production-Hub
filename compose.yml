@@ -1,45 +1,49 @@
+name: conceito3d-production-hub
+
 services:
-  hub:
-    build: ./hub
+  database:
+    image: postgres:16-alpine
+    container_name: conceito3d-production-hub-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-production_hub}
+      POSTGRES_USER: ${POSTGRES_USER:-production_hub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no ficheiro .env}
+    volumes:
+      - production-hub-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: conceito3d-production-hub-api
+    restart: unless-stopped
+    environment:
+      API_PORT: 3001
+      DATA_DIRECTORY: /data
+      DATABASE_URL: postgresql://${POSTGRES_USER:-production_hub}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB:-production_hub}
+    volumes:
+      - production-hub-data:/data
+    depends_on:
+      database:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
     container_name: conceito3d-production-hub
     restart: unless-stopped
     ports:
-      - "8080:8080"
-    environment:
-      PORT: 8080
-      PRINT_FARM_URL: http://print-farm-manager:3000
-      SPOOLMAN_URL: http://spoolman:8000
-      HUB_AUTH_USER: ${HUB_AUTH_USER:-}
-      HUB_AUTH_PASSWORD: ${HUB_AUTH_PASSWORD:-}
-    volumes:
-      - hub-data:/app/data
+      - "8080:80"
     depends_on:
-      - print-farm-manager
-      - spoolman
-
-  print-farm-manager:
-    image: ghcr.io/joeltelling/print-farm-manager:latest
-    container_name: print-farm-manager
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:3001:3000"
-    volumes:
-      - farm-data:/app/server/data
-      - farm-gcode:/app/server/gcode
-
-  spoolman:
-    image: ghcr.io/donkie/spoolman:latest
-    container_name: spoolman
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:7912:8000"
-    volumes:
-      - spoolman-data:/home/app/.local/share/spoolman
-    environment:
-      TZ: Europe/Lisbon
+      - api
 
 volumes:
-  farm-data:
-  farm-gcode:
-  spoolman-data:
-  hub-data:
+  production-hub-postgres:
+  production-hub-data:

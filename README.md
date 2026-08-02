@@ -1,26 +1,27 @@
 # Conceito 3D Production Hub
 
-Portal interno para a operação da farm. Esta primeira versão reúne, numa instalação Docker única:
+Portal único para a operação da farm: impressoras, biblioteca de G-code, fila de produção, encomendas, clientes, bobines, manutenção e relatórios.
 
-- Dashboard com estado das impressoras e do inventário;
-- Print Farm Manager para fila e despacho de trabalhos;
-- Spoolman para bobines e filamentos;
-- Portainer continua separado, como ferramenta de administração.
+## O que está integrado
 
-O aspeto escuro com laranja Conceito 3D é o sistema visual oficial do projeto. Ver `DESIGN_SYSTEM.md`.
+- Importação de encomendas em PDF: lê a camada de texto e usa OCR local em português quando o PDF é digitalizado.
+- Clientes e modelos de PDF por cliente.
+- Projetos/encomendas, trabalhos, reserva e consumo de material.
+- Biblioteca de G-code com análise de tempos, material e miniaturas.
+- Impressoras Moonraker, OctoPrint, PrusaLink, Anycubic e Creality através de adaptadores locais.
+- Bobines e sincronização opcional com Spoolman; o portal é a interface diária.
+- Plano de manutenção, alertas e métricas de produção.
 
-## Instalação
+## Instalação no LattePanda
 
-1. Copiar esta pasta para `/srv/containers/apps/conceito3d-production-hub` no servidor.
-2. Nessa pasta, executar `docker compose up -d --build`.
-3. Abrir `http://IP_DO_SERVIDOR:8080`.
+1. Copie `.env.production.example` para `.env` e defina uma palavra-passe segura em `POSTGRES_PASSWORD`.
+2. Execute `docker compose up -d --build`.
+3. Abra `http://192.168.1.85:8080`.
 
-Os dados persistentes são volumes Docker e, neste servidor, ficam no SSD porque o Docker Root Dir aponta para `/srv/containers/docker`.
+Os dados persistem nos volumes Docker `conceito3d-production-hub_production-hub-postgres` e `conceito3d-production-hub_production-hub-data`.
 
-## Portas
+## Atualizações e cópias de segurança
 
-- `8080`: Conceito 3D Production Hub
-- `3001`: Print Farm Manager
-- `7912`: Spoolman
+O serviço `conceito3d-hub-update.timer` atualiza a aplicação a partir de `main`. O serviço de backup guarda tanto a base de dados atual como os volumes do portal; durante a migração também mantém cópias dos volumes antigos do Print Farm Manager e do Spoolman.
 
-Não publicar estas portas na Internet. Para acesso fora da rede local, usar Tailscale.
+Nunca execute `docker compose down -v` em produção.

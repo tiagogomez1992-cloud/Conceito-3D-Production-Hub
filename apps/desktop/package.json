@@ -1,0 +1,47 @@
+{
+  "name": "@conceito/desktop",
+  "version": "0.3.18",
+  "description": "Pré-visualização portátil para Windows do Centro de Produção Conceito 3D",
+  "author": "Conceito 3D",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.9.0",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "dist:win": "electron-builder --win portable --x64"
+  },
+  "dependencies": {
+    "@conceito/api": "workspace:*"
+  },
+  "devDependencies": {
+    "electron": "^36.0.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.7.3"
+  },
+  "build": {
+    "appId": "pt.conceito.productionhub",
+    "productName": "Conceito 3D Centro de Produção",
+    "asar": true,
+    "npmRebuild": false,
+    "compression": "store",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../web/dist",
+        "to": "web"
+      }
+    ],
+    "win": {
+      "target": ["portable"],
+      "signAndEditExecutable": false
+    }
+  }
+}
