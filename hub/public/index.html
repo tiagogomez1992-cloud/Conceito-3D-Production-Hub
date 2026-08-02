@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conceito 3D · Production Hub</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div class="brand"><span class="mark">C3D</span><div><strong>Conceito 3D</strong><small>Production Hub</small></div></div>
+      <div class="live"><span id="live-dot"></span><span id="last-update">A ligar aos serviços…</span></div>
+    </header>
+
+    <nav class="tabs" aria-label="Navegação principal">
+      <button class="tab active" data-view="overview">Visão geral</button>
+      <button class="tab" data-view="production">Produção</button>
+      <button class="tab" data-view="printers">Impressoras</button>
+      <button class="tab" data-view="spools">Filamentos</button>
+    </nav>
+
+    <section class="view active" id="overview">
+    <section class="hero">
+      <div><p class="eyebrow">OPERAÇÃO DA FARM</p><h1>Produção sob controlo.</h1><p class="sub">Estado das impressoras, trabalhos e filamento num único ponto de entrada.</p></div>
+      <button id="refresh" type="button">Atualizar dados</button>
+    </section>
+
+    <section class="stats" aria-label="Resumo da produção">
+      <article><span>Impressoras</span><strong id="printers-total">—</strong><small id="printers-online">A carregar…</small></article>
+      <article><span>Em impressão</span><strong id="printers-printing">—</strong><small>Trabalhos ativos</small></article>
+      <article><span>Bobines</span><strong id="spools-total">—</strong><small id="spools-low">A carregar…</small></article>
+      <article><span>Serviços</span><strong id="services-status">—</strong><small>Estado da integração</small></article>
+    </section>
+
+    <section class="grid">
+      <article class="panel fleet"><div class="panel-heading"><div><p class="eyebrow">FARM</p><h2>Impressoras</h2></div><a href="http://192.168.1.85:3001" target="_blank" rel="noreferrer">Abrir gestor ↗</a></div><div id="printer-list" class="printer-list"><p class="empty">A recolher o estado das impressoras…</p></div></article>
+      <aside class="panel actions"><p class="eyebrow">ACESSOS</p><h2>Ferramentas</h2><a class="tool-card" href="http://192.168.1.85:3001" target="_blank" rel="noreferrer"><span>🖨</span><div><strong>Print Farm Manager</strong><small>Fila, projetos e impressoras</small></div></a><a class="tool-card" href="http://192.168.1.85:7912" target="_blank" rel="noreferrer"><span>🧵</span><div><strong>Spoolman</strong><small>Inventário de filamentos</small></div></a><a class="tool-card" href="https://192.168.1.85:9443" target="_blank" rel="noreferrer"><span>◈</span><div><strong>Portainer</strong><small>Gestão técnica do servidor</small></div></a></aside>
+    </section>
+    </section>
+
+    <section class="view" id="production">
+      <div class="section-heading"><div><p class="eyebrow">PRODUÇÃO</p><h1>Fila de trabalho</h1><p>Projetos e trabalhos registados no Print Farm Manager.</p></div><button class="primary-link" data-open-form="project-form">Novo projeto</button></div>
+      <form class="inline-form hidden" id="project-form"><label>Nome do projeto<input name="name" required placeholder="Ex.: Suportes cliente X"></label><label>Prioridade<select name="priority"><option value="0">Normal</option><option value="1">Alta</option><option value="2">Urgente</option></select></label><label class="wide">Descrição<input name="description" placeholder="Material, prazo ou notas"></label><button type="submit">Criar projeto</button><button type="button" class="secondary" data-close-form="project-form">Cancelar</button></form>
+      <div class="table-panel"><div class="table-title"><h2>Trabalhos recentes</h2><span id="jobs-count">—</span></div><div id="job-list" class="data-list"><p class="empty">A carregar trabalhos…</p></div></div>
+      <div class="table-panel"><div class="table-title"><h2>Projetos</h2><span id="projects-count">—</span></div><div id="project-list" class="data-list"><p class="empty">A carregar projetos…</p></div></div>
+    </section>
+
+    <section class="view" id="printers">
+      <div class="section-heading"><div><p class="eyebrow">FARM</p><h1>Impressoras</h1><p>Estado recebido do Print Farm Manager. A atualização ocorre a cada 15 segundos.</p></div><button class="primary-link" data-open-form="printer-form">Adicionar impressora</button></div>
+      <form class="inline-form hidden" id="printer-form"><label>Nome<input name="name" required placeholder="Ex.: RatRig 01"></label><label>IP / hostname<input name="ip" required placeholder="192.168.1.69"></label><label>Tipo<select name="type"><option value="klipper">Klipper / Moonraker</option><option value="octoprint">OctoPrint</option><option value="prusa">PrusaLink</option><option value="bambu">Bambu Lab</option><option value="elegoo-centauri">Elegoo Centauri</option></select></label><label>Modelo registado<input name="model" required placeholder="Ex.: ratrig-vcore4"></label><label>Chave API / código LAN<input name="api_key" placeholder="Opcional para Klipper"></label><label>Grupo<input name="group_name" placeholder="Ex.: Klipper"></label><button type="submit">Adicionar impressora</button><button type="button" class="secondary" data-close-form="printer-form">Cancelar</button><p class="form-note">O modelo tem de existir primeiro no Print Farm Manager.</p></form>
+      <div id="printer-grid" class="printer-grid"><p class="empty">A carregar impressoras…</p></div>
+    </section>
+
+    <section class="view" id="spools">
+      <div class="section-heading"><div><p class="eyebrow">INVENTÁRIO</p><h1>Filamentos</h1><p>Bobines registadas no Spoolman. Um aviso aparece abaixo de 200 g.</p></div><button class="primary-link" data-open-form="spool-form">Adicionar bobine</button></div>
+      <form class="inline-form hidden" id="spool-form"><label>Filamento<select name="filament_id" id="filament-select" required><option value="">A carregar filamentos…</option></select></label><label>Peso inicial (g)<input name="remaining_weight" type="number" min="1" value="1000"></label><button type="submit">Criar bobine</button><button type="button" class="secondary" data-close-form="spool-form">Cancelar</button><p class="form-note">Cria primeiro marcas e tipos de filamento no Spoolman, se a lista estiver vazia.</p></form>
+      <div id="spool-grid" class="spool-grid"><p class="empty">A carregar bobines…</p></div>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

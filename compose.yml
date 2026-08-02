@@ -1,0 +1,43 @@
+services:
+  hub:
+    build: ./hub
+    container_name: conceito3d-production-hub
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: 8080
+      PRINT_FARM_URL: http://print-farm-manager:3000
+      SPOOLMAN_URL: http://spoolman:8000
+    volumes:
+      - hub-data:/app/data
+    depends_on:
+      - print-farm-manager
+      - spoolman
+
+  print-farm-manager:
+    image: ghcr.io/joeltelling/print-farm-manager:latest
+    container_name: print-farm-manager
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    volumes:
+      - farm-data:/app/server/data
+      - farm-gcode:/app/server/gcode
+
+  spoolman:
+    image: ghcr.io/donkie/spoolman:latest
+    container_name: spoolman
+    restart: unless-stopped
+    ports:
+      - "7912:8000"
+    volumes:
+      - spoolman-data:/home/app/.local/share/spoolman
+    environment:
+      TZ: Europe/Lisbon
+
+volumes:
+  farm-data:
+  farm-gcode:
+  spoolman-data:
+  hub-data:
