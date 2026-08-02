@@ -5,7 +5,7 @@ RUN corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json apps/web/package.json
-RUN pnpm install --frozen-lockfile --filter @conceito/web...
+RUN pnpm install --no-frozen-lockfile --filter @conceito/web...
 
 COPY apps/web apps/web
 RUN pnpm --filter @conceito/web build

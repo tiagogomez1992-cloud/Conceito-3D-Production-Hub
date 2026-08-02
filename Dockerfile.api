@@ -11,7 +11,7 @@ COPY packages/octoprint-adapter/package.json packages/octoprint-adapter/package.
 COPY packages/prusalink-adapter/package.json packages/prusalink-adapter/package.json
 COPY packages/anycubic-adapter/package.json packages/anycubic-adapter/package.json
 COPY packages/creality-adapter/package.json packages/creality-adapter/package.json
-RUN pnpm install --frozen-lockfile --filter @conceito/api...
+RUN pnpm install --no-frozen-lockfile --filter @conceito/api...
 
 COPY apps/api apps/api
 COPY packages packages
