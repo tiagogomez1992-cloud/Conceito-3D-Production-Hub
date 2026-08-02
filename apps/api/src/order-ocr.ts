@@ -121,7 +121,7 @@ async function createOcrWorker(resources: OcrResources): Promise<OcrWorker> {
             await execFile("convert", [image, "-crop", `${box.width}x${box.height}+${box.left}+${box.top}`, "+repage", cropPath], { windowsHide: true, maxBuffer: 2 * 1024 * 1024 });
             target = cropPath;
           }
-          const { stdout } = await execFile(resources.tesseractPath, [target, "stdout", "-l", "por"], { windowsHide: true, maxBuffer: 2 * 1024 * 1024 });
+          const { stdout } = await execFile(resources.tesseractPath, [target, "stdout", "-l", "por+eng"], { windowsHide: true, maxBuffer: 2 * 1024 * 1024 });
           return { data: { text: stdout } };
         } finally {
           if (cropPath) await rm(cropPath, { force: true });
