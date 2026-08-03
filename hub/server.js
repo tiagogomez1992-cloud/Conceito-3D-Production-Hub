@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const multer = require('multer');
+const net = require('net');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 
@@ -13,6 +14,7 @@ const port = Number(process.env.PORT || 8080);
 const farmUrl = (process.env.PRINT_FARM_URL || 'http://print-farm-manager:3000').replace(/\/$/, '');
 const spoolmanUrl = (process.env.SPOOLMAN_URL || 'http://spoolman:8000').replace(/\/$/, '');
 const client = axios.create({ timeout: 5000 });
+const discoveryClient = axios.create({ timeout: 1200, validateStatus: () => true, maxRedirects: 0 });
 const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
 const uploadsDir = path.join(dataDir, 'uploads');
 const stateFile = path.join(dataDir, 'portal-state.json');
@@ -209,6 +211,61 @@ async function extractWithCustomerTemplate(pdf, customer) {
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
 }
 
+function localPrivateNetworks() {
+  const privateAddress = (address) => {
+    const values = address.split('.').map(Number);
+    return values[0] === 10 || (values[0] === 172 && values[1] >= 16 && values[1] <= 31) || (values[0] === 192 && values[1] === 168);
+  };
+  return Object.values(os.networkInterfaces()).flat().filter((item) => item && item.family === 'IPv4' && !item.internal && privateAddress(item.address)).map((item) => ({ address: item.address, subnet: item.address.split('.').slice(0, 3).join('.') }));
+}
+
+function requestedPrivateNetwork(value) {
+  const match = clean(value, 32).match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(?:0|\d{1,3})(?:\/24)?$/);
+  if (!match) return null;
+  const parts = match.slice(1, 4).map(Number); if (parts.some((part) => part > 255)) return null;
+  const privateNetwork = parts[0] === 10 || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) || (parts[0] === 192 && parts[1] === 168);
+  return privateNetwork ? { address: `${parts.join('.')}.0`, subnet: parts.join('.') } : null;
+}
+
+function portOpen(host, port) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host, port }); let done = false;
+    const finish = (open) => { if (done) return; done = true; socket.destroy(); resolve(open); };
+    socket.setTimeout(250); socket.once('connect', () => finish(true)); socket.once('timeout', () => finish(false)); socket.once('error', () => finish(false));
+  });
+}
+
+async function getDiscovery(url) { try { return await discoveryClient.get(url); } catch { return null; } }
+async function discoverPrinterAt(ip) {
+  const ports = await Promise.all([7125, 4408, 5000, 80].map(async (port) => ({ port, open: await portOpen(ip, port) })));
+  const open = new Set(ports.filter((entry) => entry.open).map((entry) => entry.port));
+  for (const port of [7125, 4408, 80]) if (open.has(port)) {
+    const response = await getDiscovery(`http://${ip}:${port}/server/info`);
+    if (response?.status === 200 && (response.data?.result || response.data?.moonraker_version || response.data?.api_version)) return { ip, port, type: 'klipper', detected_as: 'Moonraker / Klipper', url: `http://${ip}:${port}` };
+  }
+  for (const port of [5000, 80]) if (open.has(port)) {
+    const response = await getDiscovery(`http://${ip}:${port}/api/version`);
+    if (response?.status === 200 && (response.data?.api || response.data?.server || /octoprint/i.test(JSON.stringify(response.data)))) return { ip, port, type: 'octoprint', detected_as: 'OctoPrint', url: `http://${ip}:${port}` };
+  }
+  if (open.has(80)) {
+    const response = await getDiscovery(`http://${ip}:80/api/v1/status`);
+    if (response?.status === 200 && (response.data?.printer || response.data?.telemetry || response.data?.storage)) return { ip, port: 80, type: 'prusa', detected_as: 'PrusaLink', url: `http://${ip}` };
+    const root = await getDiscovery(`http://${ip}:80/`); const text = typeof root?.data === 'string' ? root.data : '';
+    if (/octoprint/i.test(text)) return { ip, port: 80, type: 'octoprint', detected_as: 'OctoPrint', url: `http://${ip}` };
+    if (/prusalink|prusa link/i.test(text)) return { ip, port: 80, type: 'prusa', detected_as: 'PrusaLink', url: `http://${ip}` };
+  }
+  return null;
+}
+
+async function discoverLocalPrinters(requestedSubnet) {
+  const requested = requestedPrivateNetwork(requestedSubnet); const networks = requested ? [requested] : localPrivateNetworks(); const seen = new Set(); const candidates = [];
+  for (const network of networks) for (let host = 1; host <= 254; host += 1) { const ip = `${network.subnet}.${host}`; if (ip !== network.address && !seen.has(ip)) { seen.add(ip); candidates.push(ip); } }
+  let cursor = 0; const found = [];
+  const worker = async () => { while (cursor < candidates.length) { const ip = candidates[cursor++]; const result = await discoverPrinterAt(ip); if (result) found.push(result); } };
+  await Promise.all(Array.from({ length: Math.min(28, candidates.length) }, worker));
+  return { networks, printers: found.sort((left, right) => left.ip.localeCompare(right.ip)) };
+}
+
 async function safeGet(url) { try { const response = await client.get(url); return { ok: true, data: response.data }; } catch (error) { return { ok: false, error: error.message }; } }
 async function safeRequest(method, url, data) { try { const response = await client.request({ method, url, data }); return { ok: true, data: response.data }; } catch (error) { return { ok: false, status: error.response?.status || 502, error: error.response?.data?.error || error.response?.data?.detail || error.message }; } }
 function forwarded(res, result, status = 201) { return result.ok ? res.status(status).json(result.data) : res.status(result.status || 502).json({ error: result.error || 'O serviço não aceitou o pedido.' }); }
@@ -311,6 +368,10 @@ app.post('/api/orders/:id/complete', async (req, res) => {
   item.status = 'completed'; item.updated_at = new Date().toISOString(); save(saved); res.json({ order: item, consumed_grams: grams || null });
 });
 
+app.post('/api/printers/discover', async (req, res) => {
+  const requested = clean(req.body?.subnet, 32); if (requested && !requestedPrivateNetwork(requested)) return res.status(400).json({ error: 'Indica uma rede privada /24, por exemplo 192.168.1.0/24.' });
+  try { res.json(await discoverLocalPrinters(requested)); } catch (error) { res.status(502).json({ error: `Não foi possível analisar a rede local: ${error.message || 'erro desconhecido'}` }); }
+});
 app.post('/api/printers', async (req, res) => forwarded(res, await safeRequest('post', `${farmUrl}/api/printers`, req.body)));
 app.post('/api/projects', async (req, res) => forwarded(res, await safeRequest('post', `${farmUrl}/api/projects`, req.body)));
 app.post('/api/spools', async (req, res) => { const { filament_id, remaining_weight } = req.body || {}; if (!filament_id) return res.status(400).json({ error: 'Seleciona um filamento antes de criar a bobine.' }); forwarded(res, await safeRequest('post', `${spoolmanUrl}/api/v1/spool`, { filament_id: Number(filament_id), used_weight: 0, ...(remaining_weight ? { initial_weight: Number(remaining_weight) } : {}) })); });
