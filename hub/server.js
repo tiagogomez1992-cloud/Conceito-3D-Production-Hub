@@ -353,6 +353,13 @@ app.patch('/api/orders/:id', (req, res) => {
   if (req.body?.priority !== undefined) item.priority = Math.min(2, Math.max(0, Number(req.body.priority) || 0));
   item.updated_at = new Date().toISOString(); save(saved); res.json(item);
 });
+app.delete('/api/orders/:id', (req, res) => {
+  const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
+  for (const file of item.files || []) if (file.stored_name) fs.rmSync(path.join(uploadsDir, file.stored_name), { force: true });
+  saved.orders = saved.orders.filter((order) => order.id !== item.id);
+  saved.consumption = saved.consumption.filter((entry) => entry.order_id !== item.id);
+  save(saved); res.status(204).end();
+});
 app.post('/api/orders/:id/files', upload.single('gcode'), (req, res) => {
   const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
   if (!req.file) return res.status(400).json({ error: 'Seleciona um ficheiro G-code.' });
