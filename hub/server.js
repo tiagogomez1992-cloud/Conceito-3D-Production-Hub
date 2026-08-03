@@ -23,12 +23,13 @@ const execFileAsync = promisify(execFile);
 fs.mkdirSync(uploadsDir, { recursive: true });
 app.use(express.json({ limit: '256kb' }));
 
-function state() { try { return { assignments: {}, consumption: [], orders: [], ...JSON.parse(fs.readFileSync(stateFile, 'utf8')) }; } catch { return { assignments: {}, consumption: [], orders: [] }; } }
+function state() { try { return { assignments: {}, consumption: [], orders: [], customers: [], ...JSON.parse(fs.readFileSync(stateFile, 'utf8')) }; } catch { return { assignments: {}, consumption: [], orders: [], customers: [] }; } }
 function save(value) { fs.writeFileSync(stateFile, JSON.stringify(value, null, 2)); }
 function clean(value, max = 500) { return String(value || '').trim().slice(0, max); }
 function number(value) { const n = Number(String(value || '').replace(',', '.')); return Number.isFinite(n) ? n : null; }
 function orderId() { return `C3D-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`; }
 function getOrder(value, id) { return value.orders.find((item) => item.id === id); }
+function getCustomer(value, id) { return value.customers.find((item) => item.id === id); }
 
 function authentication(req, res, next) {
   if (!authUser || !authPassword) return next();
@@ -123,6 +124,67 @@ async function extractPdfOrder(pdf) {
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
 }
 
+function pngDimensions(buffer) {
+  if (buffer.subarray(1, 4).toString('ascii') !== 'PNG') throw new Error('A pré-visualização do PDF não é válida.');
+  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+}
+
+async function renderPdfFirstPage(pdf, directory) {
+  const input = path.join(directory, 'modelo.pdf');
+  const prefix = path.join(directory, 'page');
+  fs.writeFileSync(input, pdf);
+  await execFileAsync('pdftoppm', ['-f', '1', '-l', '1', '-r', '144', '-png', input, prefix], { maxBuffer: 4 * 1024 * 1024 });
+  const image = fs.readdirSync(directory).find((file) => /^page-1\.png$/i.test(file));
+  if (!image) throw new Error('Não foi possível criar a pré-visualização da primeira página.');
+  return path.join(directory, image);
+}
+
+function templateFields(value) {
+  if (!Array.isArray(value)) return [];
+  const allowed = new Set(['customer', 'order_number', 'part_code', 'quantity']);
+  return value.filter((field) => allowed.has(field?.field)).map((field) => ({
+    field: field.field,
+    left: Math.max(0, Math.min(99.9, Number(field.left) || 0)),
+    top: Math.max(0, Math.min(99.9, Number(field.top) || 0)),
+    width: Math.max(0.5, Math.min(100, Number(field.width) || 0)),
+    height: Math.max(0.5, Math.min(100, Number(field.height) || 0)),
+  })).filter((field) => field.left + field.width <= 100.5 && field.top + field.height <= 100.5);
+}
+
+async function extractWithCustomerTemplate(pdf, customer) {
+  const fields = templateFields(customer?.template?.fields);
+  if (!fields.length) return null;
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'c3d-customer-template-'));
+  try {
+    const page = await renderPdfFirstPage(pdf, temporary);
+    const dimensions = pngDimensions(fs.readFileSync(page));
+    const result = {};
+    for (const [index, field] of fields.entries()) {
+      const x = Math.round((field.left / 100) * dimensions.width);
+      const y = Math.round((field.top / 100) * dimensions.height);
+      const width = Math.max(1, Math.round((field.width / 100) * dimensions.width));
+      const height = Math.max(1, Math.round((field.height / 100) * dimensions.height));
+      const crop = path.join(temporary, `field-${index}.png`);
+      await execFileAsync('convert', [page, '-crop', `${width}x${height}+${x}+${y}`, '+repage', crop], { maxBuffer: 4 * 1024 * 1024 });
+      const text = clean(String((await execFileAsync('tesseract', [crop, 'stdout', '-l', 'por+eng', '--psm', '6'], { maxBuffer: 4 * 1024 * 1024 })).stdout || '').replace(/\s+/g, ' '), 500);
+      if (!result[field.field]) result[field.field] = [];
+      result[field.field].push(text);
+    }
+    const values = Object.fromEntries(Object.entries(result).map(([key, parts]) => [key, parts.filter(Boolean).join(' ')]));
+    const codes = String(values.part_code || '').match(/[A-Z0-9][A-Z0-9._/-]{1,}/gi) || [];
+    const quantities = (String(values.quantity || '').match(/\d{1,5}/g) || []).map(Number).filter(Boolean);
+    const items = codes.slice(0, Math.min(codes.length, quantities.length, 100)).map((part_code, index) => ({ part_code: part_code.toUpperCase(), quantity: quantities[index] }));
+    return {
+      customer: customer.name,
+      order_number: clean(values.order_number, 120),
+      items,
+      warnings: items.length ? [] : ['O modelo do cliente não identificou referências e quantidades; confirme manualmente.'],
+      ocr_used: true,
+      template_used: true,
+    };
+  } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
+}
+
 async function safeGet(url) { try { const response = await client.get(url); return { ok: true, data: response.data }; } catch (error) { return { ok: false, error: error.message }; } }
 async function safeRequest(method, url, data) { try { const response = await client.request({ method, url, data }); return { ok: true, data: response.data }; } catch (error) { return { ok: false, status: error.response?.status || 502, error: error.response?.data?.error || error.response?.data?.detail || error.message }; } }
 function forwarded(res, result, status = 201) { return result.ok ? res.status(status).json(result.data) : res.status(result.status || 502).json({ error: result.error || 'O serviço não aceitou o pedido.' }); }
@@ -137,18 +199,56 @@ app.get('/api/summary', async (_req, res) => {
 });
 
 app.get('/api/orders', (_req, res) => res.json(state().orders));
+app.get('/api/customers', (_req, res) => res.json(state().customers));
+app.post('/api/customers/template-preview', pdfUpload.single('pdf'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Seleciona um PDF de exemplo.' });
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'c3d-template-preview-'));
+  try {
+    const page = await renderPdfFirstPage(req.file.buffer, temporary);
+    const image = fs.readFileSync(page);
+    const dimensions = pngDimensions(image);
+    res.json({ file_name: clean(req.file.originalname, 255), image: `data:image/png;base64,${image.toString('base64')}`, ...dimensions });
+  } catch (error) {
+    res.status(422).json({ error: `Não foi possível preparar o PDF: ${error.message || 'erro desconhecido'}` });
+  } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
+});
+app.post('/api/customers', (req, res) => {
+  const name = clean(req.body?.name, 120); if (!name) return res.status(400).json({ error: 'O nome do cliente é obrigatório.' });
+  const saved = state();
+  if (saved.customers.some((item) => item.name.toLowerCase() === name.toLowerCase())) return res.status(409).json({ error: 'Já existe um cliente com este nome.' });
+  const item = { id: crypto.randomUUID(), name, email: clean(req.body?.email, 160), phone: clean(req.body?.phone, 60), notes: clean(req.body?.notes, 1000), template: { sample_name: clean(req.body?.template?.sample_name, 255), fields: templateFields(req.body?.template?.fields) }, created_at: new Date().toISOString() };
+  saved.customers.push(item); save(saved); res.status(201).json(item);
+});
+app.delete('/api/customers/:id', (req, res) => {
+  const saved = state(); const index = saved.customers.findIndex((item) => item.id === req.params.id);
+  if (index < 0) return res.status(404).json({ error: 'Cliente não encontrado.' });
+  if (saved.orders.some((order) => order.customer_id === req.params.id)) return res.status(409).json({ error: 'Este cliente já tem encomendas associadas e não pode ser removido.' });
+  saved.customers.splice(index, 1); save(saved); res.status(204).end();
+});
 app.post('/api/orders/import-pdf', pdfUpload.single('pdf'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Seleciona um PDF de encomenda.' });
   try {
-    const draft = await extractPdfOrder(req.file.buffer);
-    res.json({ file_name: clean(req.file.originalname, 255), ...draft });
+    const saved = state(); const customer = clean(req.body?.customer_id, 80) ? getCustomer(saved, req.body.customer_id) : null;
+    if (req.body?.customer_id && !customer) return res.status(404).json({ error: 'Cliente não encontrado.' });
+    const generic = await extractPdfOrder(req.file.buffer);
+    const templated = customer ? await extractWithCustomerTemplate(req.file.buffer, customer) : null;
+    const draft = templated ? {
+      ...generic,
+      customer: customer.name,
+      order_number: templated.order_number || generic.order_number,
+      items: templated.items.length ? templated.items : generic.items,
+      warnings: [...new Set([...(generic.warnings || []), ...(templated.warnings || [])])],
+      ocr_used: Boolean(generic.ocr_used || templated.ocr_used),
+      template_used: true,
+    } : { ...generic, ...(customer ? { customer: customer.name, template_used: false } : {}) };
+    res.json({ file_name: clean(req.file.originalname, 255), customer_id: customer?.id || null, ...draft });
   } catch (error) {
     res.status(422).json({ error: `NÃ£o foi possÃ­vel ler o PDF: ${error.message || 'erro desconhecido'}` });
   }
 });
 app.post('/api/orders', (req, res) => {
   if (!clean(req.body?.title, 120)) return res.status(400).json({ error: 'O nome da encomenda é obrigatório.' });
-  const saved = state(); const item = { id: orderId(), title: clean(req.body.title, 120), customer: clean(req.body.customer, 120), due_date: clean(req.body.due_date, 20) || null, priority: Math.min(2, Math.max(0, Number(req.body.priority) || 0)), notes: clean(req.body.notes, 1000), status: 'received', printer_id: null, files: [], items: Array.isArray(req.body.items) ? req.body.items.slice(0, 100) : [], document: req.body.document || null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+  const saved = state(); const customer = clean(req.body?.customer_id, 80) ? getCustomer(saved, req.body.customer_id) : null; const item = { id: orderId(), title: clean(req.body.title, 120), customer_id: customer?.id || null, customer: customer?.name || clean(req.body.customer, 120), due_date: clean(req.body.due_date, 20) || null, priority: Math.min(2, Math.max(0, Number(req.body.priority) || 0)), notes: clean(req.body.notes, 1000), status: 'received', printer_id: null, files: [], items: Array.isArray(req.body.items) ? req.body.items.slice(0, 100) : [], document: req.body.document || null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
   saved.orders.unshift(item); save(saved); res.status(201).json(item);
 });
 app.patch('/api/orders/:id', (req, res) => {
