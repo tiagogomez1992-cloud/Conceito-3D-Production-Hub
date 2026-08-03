@@ -49,6 +49,20 @@ async function update() { $('refresh').disabled = true; try { const data = await
 $('refresh').onclick = update;
 $('discover-printers').onclick = async () => { const button = $('discover-printers'); button.disabled = true; button.textContent = 'A analisar…'; try { renderDiscovery(await api('/api/printers/discover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subnet: $('discovery-subnet').value }) })); } catch (error) { toast(error.message, 'error'); } finally { button.disabled = false; button.textContent = 'Analisar rede local'; } };
 document.querySelectorAll('.tab').forEach((tab) => tab.onclick = () => { document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === tab)); document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === tab.dataset.view)); });
+renderOrderRemovalButtons = function renderActiveOrderRemovalButtons() {
+  document.querySelectorAll('#order-board .order-card').forEach((card, index) => {
+    const order = latest.orders.filter((item) => item.status !== 'completed')[index]; const actions = card.querySelector('.order-actions');
+    if (order && actions) actions.insertAdjacentHTML('beforeend', `<button class="compact danger" data-delete-order="${escape(order.id)}">Remover</button>`);
+  });
+};
+const historyTab = document.createElement('button');
+historyTab.className = 'tab'; historyTab.dataset.view = 'history'; historyTab.textContent = 'Histórico';
+document.querySelector('.tabs').insertBefore(historyTab, document.querySelector('[data-view="system"]'));
+const historyView = document.createElement('section');
+historyView.className = 'view'; historyView.id = 'history';
+historyView.innerHTML = '<div class="section-heading"><div><p class="eyebrow">ARQUIVO</p><h1>Histórico de encomendas</h1><p>Encomendas concluídas, respetivos G-codes e quantidades produzidas.</p></div></div><div id="history-board" class="history-board"><p class="empty">A carregar histórico…</p></div>';
+document.querySelector('main.shell').insertBefore(historyView, $('files'));
+historyTab.onclick = () => { document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === historyTab)); document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view === historyView)); };
 document.addEventListener('click', async (event) => {
   const open = event.target.closest('[data-open-form]'), close = event.target.closest('[data-close-form]');
   if (open) $(open.dataset.openForm).classList.remove('hidden');
@@ -101,16 +115,28 @@ function orderGcodeLinks(order) {
 renderOrders = function renderOrdersWithPieces() {
   $('orders-total').textContent = latest.orders.filter((o) => o.status !== 'completed').length;
   $('orders-urgent').textContent = `${latest.orders.filter((o) => Number(o.priority) === 2 && o.status !== 'completed').length} urgentes`;
-  $('order-board').innerHTML = latest.orders.length ? latest.orders.map((o) => {
+  const activeOrders = latest.orders.filter((o) => o.status !== 'completed');
+  $('order-board').innerHTML = activeOrders.length ? activeOrders.map((o) => {
     const source = o.document?.file_name ? `<span>PDF: ${escape(o.document.file_name)}${o.document.ocr_used ? ' · OCR' : ''}</span>` : '';
     const items = o.items?.length ? `<span>${o.items.length} linha(s) lida(s) no PDF</span>` : '';
     const printerOptions = ['<option value="">Atribuir impressora</option>', ...latest.printers.map((p) => `<option value="${p.id}" ${Number(o.printer_id) === Number(p.id) ? 'selected' : ''}>${escape(p.name)}</option>`)].join('');
     return `<article class="order-card ${Number(o.priority) === 2 ? 'urgent' : ''}"><div class="order-top"><div><p class="eyebrow">${escape(o.id)}</p><h2>${escape(o.title)}</h2><p>${escape(o.customer || 'Sem cliente')} · ${o.due_date ? escape(o.due_date) : 'Sem prazo'}</p></div><span class="badge ${o.status === 'completed' ? 'online' : Number(o.priority) === 2 ? 'printing' : 'offline'}">${escape(o.status)}</span></div><div class="order-meta">${source}${items}<span class="order-gcode-summary">Sem peças/G-codes associados.</span></div><div class="order-actions"><label>Impressora<select data-order-printer="${escape(o.id)}">${printerOptions}</select></label>${o.status !== 'completed' ? `<button class="compact" data-complete-order="${escape(o.id)}">Concluir</button>` : ''}</div></article>`;
-  }).join('') : '<p class="empty">Ainda não existem encomendas.</p>';
+  }).join('') : '<p class="empty">Não existem encomendas ativas na fila.</p>';
+  renderHistory();
 };
+function renderHistory() {
+  const completed = latest.orders.filter((order) => order.status === 'completed');
+  const board = $('history-board'); if (!board) return;
+  board.innerHTML = completed.length ? completed.map((order) => {
+    const pieces = orderGcodeLinks(order);
+    const summary = pieces.length ? pieces.map((piece) => piece.missing ? 'G-code removido' : `${escape(piece.file.original_name)} · ${piece.requested} peça(s)`).join('<br>') : 'Sem G-code associado';
+    const finished = order.updated_at ? new Date(order.updated_at).toLocaleString('pt-PT', { dateStyle: 'short', timeStyle: 'short' }) : '—';
+    return `<article class="history-card"><div><p class="eyebrow">${escape(order.id)}</p><h2>${escape(order.title)}</h2><p>${escape(order.customer || 'Sem cliente')}</p></div><div><strong>Concluída</strong><small>${escape(finished)}</small></div><div class="history-pieces">${summary}</div></article>`;
+  }).join('') : '<p class="empty">Ainda não existem encomendas concluídas.</p>';
+}
 renderOrderLibrarySelectors = function renderOrderPieces() {
   document.querySelectorAll('#order-board .order-card').forEach((card, index) => {
-    const order = latest.orders[index]; const actions = card.querySelector('.order-actions'); if (!order || !actions) return;
+    const order = latest.orders.filter((item) => item.status !== 'completed')[index]; const actions = card.querySelector('.order-actions'); if (!order || !actions) return;
     const links = orderGcodeLinks(order);
     const rows = links.length ? links.map((link) => link.missing
       ? `<div class="order-file-row broken"><span>G-code removido da biblioteca</span><button class="compact danger" data-remove-order-file="${escape(order.id)}" data-library-file-id="${escape(link.file_id)}">Retirar</button></div>`
