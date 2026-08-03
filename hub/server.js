@@ -33,6 +33,20 @@ function orderId() { return `C3D-${new Date().getFullYear()}-${String(Date.now()
 function getOrder(value, id) { return value.orders.find((item) => item.id === id); }
 function getCustomer(value, id) { return value.customers.find((item) => item.id === id); }
 function getLibraryFile(value, id) { return value.files.find((item) => item.id === id); }
+function orderLibraryFiles(order) {
+  if (Array.isArray(order.library_files)) return order.library_files.filter((entry) => entry?.file_id);
+  return order.library_file_id ? [{ file_id: order.library_file_id, requested_quantity: null }] : [];
+}
+function orderGcodePlan(value, order) {
+  return orderLibraryFiles(order).flatMap((entry) => {
+    const file = getLibraryFile(value, entry.file_id);
+    if (!file) return [];
+    const piecesPerRun = Math.max(1, Math.floor(Number(file.metadata?.quantity) || 1));
+    const requestedQuantity = Math.max(1, Math.floor(Number(entry.requested_quantity) || piecesPerRun));
+    const runs = Math.ceil(requestedQuantity / piecesPerRun);
+    return [{ file, requested_quantity: requestedQuantity, pieces_per_run: piecesPerRun, runs, grams: runs * (Number(file.metadata?.filament_grams) || 0) }];
+  });
+}
 
 function authentication(req, res, next) {
   if (!authUser || !authPassword) return next();
@@ -290,6 +304,8 @@ app.post('/api/files', upload.single('gcode'), (req, res) => {
   saved.files.unshift(item); save(saved); res.status(201).json(item);
 });
 app.delete('/api/files/:id', (req, res) => {
+  const referenced = state().orders.some((order) => orderLibraryFiles(order).some((entry) => entry.file_id === req.params.id));
+  if (referenced) return res.status(409).json({ error: 'Este G-code está associado a uma encomenda. Remove primeiro a associação; o ficheiro permanece na biblioteca.' });
   const saved = state(); const file = getLibraryFile(saved, req.params.id); if (!file) return res.status(404).json({ error: 'Ficheiro não encontrado.' });
   for (const name of [file.stored_name, file.thumbnail?.stored_name]) if (name) fs.rmSync(path.join(uploadsDir, name), { force: true });
   saved.files = saved.files.filter((item) => item.id !== file.id); save(saved); res.status(204).end();
@@ -344,7 +360,7 @@ app.post('/api/orders/import-pdf', pdfUpload.single('pdf'), async (req, res) => 
 });
 app.post('/api/orders', (req, res) => {
   if (!clean(req.body?.title, 120)) return res.status(400).json({ error: 'O nome da encomenda é obrigatório.' });
-  const saved = state(); const customer = clean(req.body?.customer_id, 80) ? getCustomer(saved, req.body.customer_id) : null; const item = { id: orderId(), title: clean(req.body.title, 120), customer_id: customer?.id || null, customer: customer?.name || clean(req.body.customer, 120), due_date: clean(req.body.due_date, 20) || null, priority: Math.min(2, Math.max(0, Number(req.body.priority) || 0)), notes: clean(req.body.notes, 1000), status: 'received', printer_id: null, files: [], items: Array.isArray(req.body.items) ? req.body.items.slice(0, 100) : [], document: req.body.document || null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+  const saved = state(); const customer = clean(req.body?.customer_id, 80) ? getCustomer(saved, req.body.customer_id) : null; const item = { id: orderId(), title: clean(req.body.title, 120), customer_id: customer?.id || null, customer: customer?.name || clean(req.body.customer, 120), due_date: clean(req.body.due_date, 20) || null, priority: Math.min(2, Math.max(0, Number(req.body.priority) || 0)), notes: clean(req.body.notes, 1000), status: 'received', printer_id: null, files: [], library_files: [], items: Array.isArray(req.body.items) ? req.body.items.slice(0, 100) : [], document: req.body.document || null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
   saved.orders.unshift(item); save(saved); res.status(201).json(item);
 });
 app.patch('/api/orders/:id', (req, res) => {
@@ -365,6 +381,24 @@ app.post('/api/orders/:id/library-file', (req, res) => {
   if (fileId && !file) return res.status(404).json({ error: 'G-code não encontrado na biblioteca.' });
   item.library_file_id = file?.id || null; item.updated_at = new Date().toISOString(); save(saved); res.json(item);
 });
+app.post('/api/orders/:id/library-files', (req, res) => {
+  const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
+  const fileId = clean(req.body?.file_id, 80); const file = getLibraryFile(saved, fileId);
+  const requestedQuantity = Math.floor(Number(req.body?.requested_quantity));
+  if (!file) return res.status(404).json({ error: 'G-code não encontrado na biblioteca.' });
+  if (!Number.isInteger(requestedQuantity) || requestedQuantity < 1) return res.status(400).json({ error: 'Indica uma quantidade pedida válida para esta peça.' });
+  const files = orderLibraryFiles(item); const existing = files.find((entry) => entry.file_id === file.id);
+  if (existing) existing.requested_quantity = requestedQuantity;
+  else files.push({ file_id: file.id, requested_quantity: requestedQuantity });
+  item.library_files = files; delete item.library_file_id; item.updated_at = new Date().toISOString(); save(saved);
+  res.status(existing ? 200 : 201).json({ order: item, plan: orderGcodePlan(saved, item) });
+});
+app.delete('/api/orders/:id/library-files/:fileId', (req, res) => {
+  const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
+  const before = orderLibraryFiles(item); const remaining = before.filter((entry) => entry.file_id !== req.params.fileId);
+  if (before.length === remaining.length) return res.status(404).json({ error: 'Este G-code não está associado à encomenda.' });
+  item.library_files = remaining; delete item.library_file_id; item.updated_at = new Date().toISOString(); save(saved); res.status(204).end();
+});
 app.post('/api/orders/:id/files', upload.single('gcode'), (req, res) => {
   const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
   if (!req.file) return res.status(400).json({ error: 'Seleciona um ficheiro G-code.' });
@@ -375,9 +409,13 @@ app.post('/api/orders/:id/files', upload.single('gcode'), (req, res) => {
 });
 app.post('/api/orders/:id/complete', async (req, res) => {
   const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
-  const file = getLibraryFile(saved, item.library_file_id) || item.files.find((candidate) => candidate.id === req.body?.file_id) || item.files[0]; const spoolId = saved.assignments[String(item.printer_id)]?.spool_id; const grams = Number(file?.metadata?.filament_grams || 0);
+  const plan = orderGcodePlan(saved, item);
+  const legacyFile = getLibraryFile(saved, item.library_file_id) || item.files.find((candidate) => candidate.id === req.body?.file_id) || item.files[0];
+  if (!plan.length && !legacyFile) return res.status(400).json({ error: 'Associa pelo menos um G-code da biblioteca antes de concluir a encomenda.' });
+  const grams = plan.length ? plan.reduce((total, entry) => total + entry.grams, 0) : Number(legacyFile?.metadata?.filament_grams || 0);
+  const spoolId = saved.assignments[String(item.printer_id)]?.spool_id;
   if (spoolId && grams > 0) { const spool = await safeGet(`${spoolmanUrl}/api/v1/spool/${spoolId}`); if (!spool.ok) return res.status(502).json({ error: 'Não foi possível obter a bobine atribuída.' }); const result = await safeRequest('patch', `${spoolmanUrl}/api/v1/spool/${spoolId}`, { used_weight: Number(spool.data.used_weight || 0) + grams }); if (!result.ok) return res.status(502).json({ error: 'Não foi possível atualizar o peso no Spoolman.' }); saved.consumption.unshift({ spool_id: spoolId, grams, printer_id: item.printer_id, order_id: item.id, automatic: true, created_at: new Date().toISOString() }); }
-  item.status = 'completed'; item.updated_at = new Date().toISOString(); save(saved); res.json({ order: item, consumed_grams: grams || null });
+  item.status = 'completed'; item.updated_at = new Date().toISOString(); save(saved); res.json({ order: item, consumed_grams: grams || null, gcode_plan: plan });
 });
 
 app.post('/api/printers/discover', async (req, res) => {
