@@ -355,10 +355,15 @@ app.patch('/api/orders/:id', (req, res) => {
 });
 app.delete('/api/orders/:id', (req, res) => {
   const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
-  for (const file of item.files || []) if (file.stored_name) fs.rmSync(path.join(uploadsDir, file.stored_name), { force: true });
   saved.orders = saved.orders.filter((order) => order.id !== item.id);
   saved.consumption = saved.consumption.filter((entry) => entry.order_id !== item.id);
   save(saved); res.status(204).end();
+});
+app.post('/api/orders/:id/library-file', (req, res) => {
+  const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
+  const fileId = clean(req.body?.file_id, 80); const file = fileId ? getLibraryFile(saved, fileId) : null;
+  if (fileId && !file) return res.status(404).json({ error: 'G-code não encontrado na biblioteca.' });
+  item.library_file_id = file?.id || null; item.updated_at = new Date().toISOString(); save(saved); res.json(item);
 });
 app.post('/api/orders/:id/files', upload.single('gcode'), (req, res) => {
   const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
@@ -370,7 +375,7 @@ app.post('/api/orders/:id/files', upload.single('gcode'), (req, res) => {
 });
 app.post('/api/orders/:id/complete', async (req, res) => {
   const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
-  const file = item.files.find((candidate) => candidate.id === req.body?.file_id) || item.files[0]; const spoolId = saved.assignments[String(item.printer_id)]?.spool_id; const grams = Number(file?.metadata?.filament_grams || 0);
+  const file = getLibraryFile(saved, item.library_file_id) || item.files.find((candidate) => candidate.id === req.body?.file_id) || item.files[0]; const spoolId = saved.assignments[String(item.printer_id)]?.spool_id; const grams = Number(file?.metadata?.filament_grams || 0);
   if (spoolId && grams > 0) { const spool = await safeGet(`${spoolmanUrl}/api/v1/spool/${spoolId}`); if (!spool.ok) return res.status(502).json({ error: 'Não foi possível obter a bobine atribuída.' }); const result = await safeRequest('patch', `${spoolmanUrl}/api/v1/spool/${spoolId}`, { used_weight: Number(spool.data.used_weight || 0) + grams }); if (!result.ok) return res.status(502).json({ error: 'Não foi possível atualizar o peso no Spoolman.' }); saved.consumption.unshift({ spool_id: spoolId, grams, printer_id: item.printer_id, order_id: item.id, automatic: true, created_at: new Date().toISOString() }); }
   item.status = 'completed'; item.updated_at = new Date().toISOString(); save(saved); res.json({ order: item, consumed_grams: grams || null });
 });
