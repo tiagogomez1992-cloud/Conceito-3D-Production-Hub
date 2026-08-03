@@ -23,13 +23,14 @@ const execFileAsync = promisify(execFile);
 fs.mkdirSync(uploadsDir, { recursive: true });
 app.use(express.json({ limit: '256kb' }));
 
-function state() { try { return { assignments: {}, consumption: [], orders: [], customers: [], ...JSON.parse(fs.readFileSync(stateFile, 'utf8')) }; } catch { return { assignments: {}, consumption: [], orders: [], customers: [] }; } }
+function state() { try { return { assignments: {}, consumption: [], orders: [], customers: [], files: [], ...JSON.parse(fs.readFileSync(stateFile, 'utf8')) }; } catch { return { assignments: {}, consumption: [], orders: [], customers: [], files: [] }; } }
 function save(value) { fs.writeFileSync(stateFile, JSON.stringify(value, null, 2)); }
 function clean(value, max = 500) { return String(value || '').trim().slice(0, max); }
 function number(value) { const n = Number(String(value || '').replace(',', '.')); return Number.isFinite(n) ? n : null; }
 function orderId() { return `C3D-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`; }
 function getOrder(value, id) { return value.orders.find((item) => item.id === id); }
 function getCustomer(value, id) { return value.customers.find((item) => item.id === id); }
+function getLibraryFile(value, id) { return value.files.find((item) => item.id === id); }
 
 function authentication(req, res, next) {
   if (!authUser || !authPassword) return next();
@@ -66,10 +67,33 @@ function gcodeMetadata(contents, supplied = {}) {
   const find = (patterns) => patterns.map((pattern) => contents.match(pattern)?.[1]?.trim()).find(Boolean) || null;
   const quantity = number(supplied.quantity) || number(find([/(?:quantidade|quantity|copies|pieces|peças|objects?)\s*[:=]\s*(\d+)/im]));
   const material = clean(supplied.material || find([/(?:filament[_ ]?(?:type|material)|material|tipo de filamento)\s*[:=]\s*([^\r\n;]+)/im]), 80) || null;
+  const color = clean(supplied.color || find([/(?:filament[_ ]?color|cor(?: do filamento)?)\s*[:=]\s*([^\r\n;]+)/im]), 80) || null;
   const nozzle = number(supplied.nozzle) || number(find([/(?:nozzle[_ ]?(?:diameter|size)?|bico(?:[_ ]?(?:diameter|size))?)\s*[:=]\s*([0-9]+(?:[\.,][0-9]+)?)/im]));
   const filament = number(find([/(?:total filament used \[g\]|filament used \[g\]|filament_weight_total)\s*[:=]\s*([0-9]+(?:[\.,][0-9]+)?)/im]));
   const missing = []; if (!quantity) missing.push('quantidade de peças'); if (!material) missing.push('tipo de material'); if (!nozzle) missing.push('tamanho do bico');
-  return { quantity, material, nozzle, filament_grams: filament, valid: !missing.length, missing };
+  if (!color) missing.push('cor');
+  return { quantity, material, color, nozzle, filament_grams: filament, valid: !missing.length, missing };
+}
+
+function svgThumbnail(name, metadata) {
+  const safe = (value) => String(value || '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360"><rect width="640" height="360" fill="#1b1e22"/><rect x="24" y="24" width="592" height="312" rx="18" fill="#252a2f" stroke="#f07f23"/><path d="M75 105h130v130H75zM95 125h90v90H95z" fill="#f07f23" opacity=".9"/><text x="235" y="132" fill="#f7f4ef" font-family="Arial,sans-serif" font-size="24" font-weight="700">${safe(name).slice(0, 34)}</text><text x="235" y="174" fill="#d2d5d8" font-family="Arial,sans-serif" font-size="18">${safe(metadata.material)} · ${safe(metadata.color)}</text><text x="235" y="208" fill="#f3a45f" font-family="Arial,sans-serif" font-size="18">${safe(metadata.quantity)} peças · bico ${safe(metadata.nozzle)} mm</text><text x="75" y="291" fill="#9ba0a5" font-family="Arial,sans-serif" font-size="16">Pré-visualização não incluída pelo slicer</text></svg>`;
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+}
+
+function gcodeThumbnail(contents, fileId, name, metadata) {
+  const blocks = [...contents.matchAll(/;\s*thumbnail begin\s+(\d+)x(\d+)\s+\d+\s*\r?\n([\s\S]*?);\s*thumbnail end/gi)];
+  const selected = blocks.sort((left, right) => Number(right[1]) * Number(right[2]) - Number(left[1]) * Number(left[2]))[0];
+  if (!selected) return { url: svgThumbnail(name, metadata), embedded: false, stored_name: null };
+  const encoded = selected[3].replace(/^\s*;\s?/gm, '').replace(/\s/g, '');
+  try {
+    const image = Buffer.from(encoded, 'base64');
+    const isPng = image.subarray(1, 4).equals(Buffer.from('PNG')); const isJpeg = image.subarray(0, 2).equals(Buffer.from([0xff, 0xd8]));
+    if (image.length < 100 || (!isPng && !isJpeg)) throw new Error('invalid thumbnail');
+    const extension = isJpeg ? '.jpg' : '.png'; const storedName = `thumbnail-${fileId}${extension}`;
+    fs.writeFileSync(path.join(uploadsDir, storedName), image);
+    return { url: `/uploads/${storedName}`, embedded: true, stored_name: storedName };
+  } catch { return { url: svgThumbnail(name, metadata), embedded: false, stored_name: null }; }
 }
 
 function pdfValue(text, patterns) {
@@ -198,6 +222,21 @@ app.get('/api/summary', async (_req, res) => {
   res.json({ generatedAt: new Date().toISOString(), services: { printFarmManager: health.ok, spoolman: spools.ok }, system: { hostname: os.hostname(), uptime_seconds: os.uptime(), memory_total_mb: Math.round(os.totalmem() / 1048576), memory_used_mb: Math.round((os.totalmem() - os.freemem()) / 1048576), cpu_load_1m: Number(os.loadavg()[0].toFixed(2)) }, printers: { total: printerItems.length, online: printerItems.filter((item) => online.has(String(item.status || '').toUpperCase())).length, printing: printerItems.filter((item) => String(item.status || '').toUpperCase() === 'PRINTING').length, items: printerItems }, spools: { total: spoolItems.length, low: spoolItems.filter((item) => Number(item.remaining_weight || 0) > 0 && Number(item.remaining_weight || 0) < 200).length, items: spoolItems }, production: { projects: Array.isArray(projects.data) ? projects.data : [], jobs: Array.isArray(jobs.data) ? jobs.data : [], orders }, assignments: saved.assignments, consumption: saved.consumption.slice(0, 20) });
 });
 
+app.get('/api/files', (_req, res) => res.json([...state().files].sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))));
+app.post('/api/files', upload.single('gcode'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Seleciona um ficheiro G-code.' });
+  const contents = fs.readFileSync(req.file.path, 'utf8').slice(0, 4 * 1024 * 1024);
+  const metadata = gcodeMetadata(contents, req.body || {});
+  if (!metadata.valid) { fs.rmSync(req.file.path, { force: true }); return res.status(400).json({ error: `Preenche os campos obrigatórios: ${metadata.missing.join(', ')}.` }); }
+  const saved = state(); const id = crypto.randomUUID(); const thumbnail = gcodeThumbnail(contents, id, req.file.originalname, metadata);
+  const item = { id, original_name: clean(req.file.originalname, 255), stored_name: req.file.filename, size_bytes: req.file.size, metadata, thumbnail, created_at: new Date().toISOString() };
+  saved.files.unshift(item); save(saved); res.status(201).json(item);
+});
+app.delete('/api/files/:id', (req, res) => {
+  const saved = state(); const file = getLibraryFile(saved, req.params.id); if (!file) return res.status(404).json({ error: 'Ficheiro não encontrado.' });
+  for (const name of [file.stored_name, file.thumbnail?.stored_name]) if (name) fs.rmSync(path.join(uploadsDir, name), { force: true });
+  saved.files = saved.files.filter((item) => item.id !== file.id); save(saved); res.status(204).end();
+});
 app.get('/api/orders', (_req, res) => res.json(state().orders));
 app.get('/api/customers', (_req, res) => res.json(state().customers));
 app.post('/api/customers/template-preview', pdfUpload.single('pdf'), async (req, res) => {
@@ -261,6 +300,7 @@ app.post('/api/orders/:id/files', upload.single('gcode'), (req, res) => {
   const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
   if (!req.file) return res.status(400).json({ error: 'Seleciona um ficheiro G-code.' });
   const metadata = gcodeMetadata(fs.readFileSync(req.file.path, 'utf8').slice(0, 1024 * 1024), req.body || {});
+  if (!metadata.valid) { fs.rmSync(req.file.path, { force: true }); return res.status(400).json({ error: `Preenche os campos obrigatórios: ${metadata.missing.join(', ')}.` }); }
   const file = { id: crypto.randomUUID(), original_name: clean(req.file.originalname, 255), stored_name: req.file.filename, size_bytes: req.file.size, uploaded_at: new Date().toISOString(), metadata };
   item.files.push(file); item.updated_at = new Date().toISOString(); save(saved); res.status(201).json(file);
 });
@@ -280,6 +320,7 @@ app.delete('/api/assignments/:printerId', (req, res) => { const saved = state();
 app.post('/api/consume', async (req, res) => { const spoolId = Number(req.body?.spool_id); const grams = Number(req.body?.grams); if (!spoolId || !Number.isFinite(grams) || grams <= 0) return res.status(400).json({ error: 'Indica uma bobine e uma quantidade válida em gramas.' }); const spool = await safeGet(`${spoolmanUrl}/api/v1/spool/${spoolId}`); if (!spool.ok) return res.status(404).json({ error: 'Bobine não encontrada.' }); const result = await safeRequest('patch', `${spoolmanUrl}/api/v1/spool/${spoolId}`, { used_weight: Number(spool.data.used_weight || 0) + grams }); if (!result.ok) return res.status(502).json({ error: 'Não foi possível atualizar o peso no Spoolman.' }); const saved = state(); saved.consumption.unshift({ spool_id: spoolId, grams, printer_id: req.body?.printer_id || null, order_id: req.body?.order_id || null, automatic: false, created_at: new Date().toISOString() }); save(saved); res.json({ spool: result.data }); });
 
 app.use((error, _req, res, _next) => res.status(400).json({ error: error.message || 'Não foi possível processar o ficheiro.' }));
+app.use('/uploads', express.static(uploadsDir));
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/health', (_req, res) => res.json({ status: 'ok', version: '0.4.0' }));
 app.get(/.*/, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
