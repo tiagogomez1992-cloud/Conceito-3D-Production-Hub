@@ -161,4 +161,56 @@ document.addEventListener('click', async (event) => {
     try { await api(`/api/orders/${remove.dataset.removeOrderFile}/library-files/${remove.dataset.libraryFileId}`, { method: 'DELETE' }); toast('G-code retirado da encomenda.'); update(); } catch (error) { toast(error.message, 'error'); }
   }
 });
-populateFilaments(); refreshCustomers(); refreshFiles(); update(); setInterval(update, 15000);
+function setupOverviewLayout() {
+  const overview = $('overview');
+  const fleet = overview?.querySelector('.fleet');
+  const actions = overview?.querySelector('.actions');
+  if (!overview || !fleet || !actions || $('overview-order-queue')) return;
+
+  fleet.classList.add('overview-printers-panel');
+  fleet.querySelector('.panel-heading').innerHTML = '<div><p class="eyebrow">FARM</p><h2>Impressoras ativas</h2></div><span class="integration-label">Ver todas</span>';
+
+  const queue = document.createElement('article');
+  queue.className = 'panel overview-queue-panel';
+  queue.innerHTML = '<div class="panel-heading"><div><p class="eyebrow">PRODUCAO</p><h2>Fila de producao</h2></div><span class="integration-label">Encomendas ativas</span></div><div class="overview-queue-head"><span>Referencia</span><span>Encomenda</span><span>Cliente</span><span>Estado</span></div><div id="overview-order-queue"></div>';
+  fleet.insertAdjacentElement('afterend', queue);
+
+  actions.classList.add('overview-sidebar');
+  actions.innerHTML = '<section class="overview-side-panel"><div class="panel-heading"><div><p class="eyebrow">INVENTARIO</p><h2>Alertas de material</h2></div><span class="integration-label">Stock</span></div><div id="overview-material-alerts"></div></section><section class="overview-side-panel"><div class="panel-heading"><div><p class="eyebrow">SISTEMA</p><h2>Estado do sistema</h2></div></div><div id="overview-system-status"></div></section>';
+}
+
+function overviewPrinterCard(printer) {
+  const rawProgress = Number(printer.job_progress || 0);
+  const progress = rawProgress * (rawProgress <= 1 ? 100 : 1);
+  const state = statusClass(printer.status);
+  return `<article class="overview-printer-card ${state}"><div class="overview-printer-title"><div><strong>${value(printer.name, 'Sem nome')}</strong><small>${state === 'printing' ? 'A imprimir' : value(printer.status, 'Offline')}</small></div><span class="status ${state}"></span></div><div class="overview-printer-preview" aria-hidden="true"><span></span><i></i></div><p>${value(printer.job_name, 'Sem trabalho ativo')}</p><div class="overview-progress"><span style="width:${Math.max(0, Math.min(100, progress || (state === 'printing' ? 4 : 0)))}%"></span></div><div class="overview-printer-footer"><small>${progress ? `${Math.round(progress)}% concluido` : value(printer.model || printer.type, 'Impressora')}</small><small>${state === 'printing' ? 'Em curso' : 'Livre'}</small></div></article>`;
+}
+
+function renderOverviewFromCurrent() {
+  const printerList = $('printer-list');
+  if (printerList) {
+    const printers = latest.printers.slice(0, 5);
+    printerList.innerHTML = printers.length ? printers.map(overviewPrinterCard).join('') : '<p class="empty overview-empty">Ainda nao existem impressoras configuradas. Adiciona a primeira no menu Impressoras.</p>';
+  }
+
+  const queue = $('overview-order-queue');
+  if (queue) {
+    const orders = latest.orders.filter((order) => order.status !== 'completed').slice(0, 5);
+    queue.innerHTML = orders.length ? orders.map((order) => `<div class="overview-queue-row"><span>${escape(order.id)}</span><strong>${escape(order.title)}</strong><small>${escape(order.customer || 'Sem cliente')}</small><em class="${Number(order.priority) === 2 ? 'urgent' : ''}">${Number(order.priority) === 2 ? 'Urgente' : escape(order.status || 'Recebida')}</em></div>`).join('') : '<p class="empty overview-empty">Nao existem encomendas ativas na fila.</p>';
+  }
+
+  const alerts = $('overview-material-alerts');
+  if (alerts) {
+    const low = latest.spools.filter((spool) => { const grams = spoolInfo(spool).remaining; return grams > 0 && grams < 200; }).slice(0, 5);
+    alerts.innerHTML = low.length ? low.map((spool) => { const info = spoolInfo(spool); return `<div class="overview-alert-row"><span class="alert-symbol">!</span><div><strong>${escape(info.material)}</strong><small>Bobine #${spool.id}</small></div><span>${info.remaining} g</span><em>Baixo stock</em></div>`; }).join('') : '<p class="empty overview-empty">Sem alertas de material.</p>';
+  }
+
+  const system = $('overview-system-status');
+  if (system) {
+    const connected = $('live-dot')?.classList.contains('connected');
+    system.innerHTML = `<div class="overview-system-icons"><span></span><span></span><span></span><span></span></div><div class="overview-system-row"><span>Rede</span><strong class="${connected ? 'is-online' : 'is-warning'}">${connected ? 'Online' : 'Verificar'}</strong></div><div class="overview-system-row"><span>Servidor</span><strong>${escape($('system-host')?.textContent || 'LattePanda')}</strong></div><div class="overview-system-row"><span>Memoria</span><strong>${escape($('system-memory')?.textContent || '-')}</strong></div>`;
+  }
+}
+
+setupOverviewLayout();
+populateFilaments(); refreshCustomers(); refreshFiles(); update().finally(renderOverviewFromCurrent); setInterval(() => update().finally(renderOverviewFromCurrent), 15000);
