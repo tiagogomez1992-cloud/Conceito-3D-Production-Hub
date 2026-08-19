@@ -74,3 +74,151 @@ header::after { content:"SHAPING TOMORROW.\A LAYER BY LAYER."; white-space:pre; 
 .toast { background:#101417; border-color:#3d474f; border-radius:6px; }.toast.error { border-color:var(--p3-orange); }
 @media (max-width:980px) { .shell { margin-left:0; padding:96px 22px 42px; } header { width:100%; height:66px; display:flex; align-items:center; padding:8px 18px; border-right:0; border-bottom:1px solid #2d3236; } header .brand { min-height:0; } header .brand::before { font-size:1.3rem; line-height:.74; width:52px; } header .brand::after { left:57px; top:1px; width:25px; height:55px; } header::before,header::after { display:none; } .live { top:16px; right:18px; } .tabs { top:66px; bottom:auto; width:100%; height:48px; display:flex; flex-direction:row; overflow-x:auto; padding:4px 12px; border-bottom:1px solid #2d3236; background:#0c0e10; } .tab { width:auto; min-width:max-content; min-height:36px; } .tab::before { display:none; } body::after { display:none; } }
 @media (max-width:700px) { .shell { padding:126px 14px 34px; }.live { display:none; }.stats { grid-template-columns:repeat(2,minmax(0,1fr)); }.grid { grid-template-columns:1fr; }.hero { min-height:0; }.hero::after { display:none; }.hero h1 { font-size:2.8rem; }.section-heading { align-items:start; flex-direction:column; } }
+
+/* Layout refinement: align the real dashboard with the approved Production Hub render. */
+@media (min-width:981px) {
+  .shell {
+    margin-left:220px;
+    padding:30px 36px 48px;
+  }
+
+  header {
+    width:220px;
+    padding:30px 24px 24px;
+  }
+
+  header .brand {
+    min-height:154px;
+  }
+
+  header .brand::before {
+    width:83px;
+    font-size:2.14rem;
+    line-height:.8;
+  }
+
+  header .brand::after {
+    left:89px;
+    top:3px;
+    width:48px;
+    height:111px;
+    box-shadow:none;
+    background-color:var(--p3-orange);
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 111'%3E%3Cg fill='none' stroke='%23111416' stroke-width='5' stroke-linejoin='miter'%3E%3Cpath d='M3 18 39 39 3 59'/%3E%3Cpath d='M3 48 39 69 3 89'/%3E%3C/g%3E%3C/svg%3E");
+    background-position:center;
+    background-repeat:no-repeat;
+    clip-path:none;
+  }
+
+  header::before {
+    top:165px;
+    left:25px;
+    font-size:.61rem;
+  }
+
+  header::after {
+    bottom:30px;
+    left:24px;
+    font-size:.61rem;
+  }
+
+  .tabs {
+    inset:208px auto 82px 0;
+    width:220px;
+    gap:2px;
+    padding:0 12px;
+    scrollbar-width:none;
+  }
+
+  .tabs::-webkit-scrollbar {
+    display:none;
+  }
+
+  .tab {
+    min-height:38px;
+    padding:8px 12px;
+    font-size:.77rem;
+  }
+
+  .tab::before {
+    width:18px;
+    margin-right:7px;
+    font-size:.9rem;
+  }
+
+  .live {
+    top:25px;
+    right:36px;
+  }
+
+  .hero {
+    min-height:104px;
+    padding:0 0 22px;
+    align-items:flex-start;
+  }
+
+  .hero h1 {
+    font-size:0;
+    line-height:1;
+  }
+
+  .hero h1::after {
+    content:"Production Hub";
+    display:block;
+    color:var(--p3-white);
+    font-family:Impact,"Arial Narrow",sans-serif;
+    font-size:clamp(2.45rem,3.15vw,3.45rem);
+    font-weight:400;
+    letter-spacing:.012em;
+    line-height:.94;
+    text-transform:none;
+  }
+
+  .hero .sub {
+    max-width:610px;
+    margin-top:10px;
+    font-size:.88rem;
+  }
+
+  .hero::after {
+    width:78px;
+    height:38px;
+    margin-top:15px;
+  }
+
+  .hero button {
+    margin-top:1px;
+    padding:11px 15px;
+    font-size:.8rem;
+  }
+
+  .stats {
+    gap:14px;
+    margin:20px 0 16px;
+  }
+
+  .stats article {
+    min-height:116px;
+    padding:17px 19px;
+  }
+
+  .stats article strong {
+    font-size:2.25rem;
+    margin-top:7px;
+  }
+
+  .stats article::after {
+    right:15px;
+    top:17px;
+    width:32px;
+    height:32px;
+  }
+
+  .grid {
+    gap:14px;
+  }
+
+  .panel {
+    padding:20px;
+  }
+}
