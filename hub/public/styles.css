@@ -617,3 +617,22 @@ header::after { content:"SHAPING TOMORROW.\A LAYER BY LAYER."; white-space:pre; 
     grid-row:1 / span 3;
   }
 }
+
+/* Keep the production interface clean: the reference uses the logo itself,
+   not extra decorative diagonal lines around the content. */
+body::after,
+.hero::after {
+  display:none;
+}
+
+@media (min-width:981px) {
+  header .brand::after {
+    width:52px;
+    height:116px;
+    background-color:transparent;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 52 116'%3E%3Crect width='52' height='116' fill='%23ff6a00'/%3E%3Cg fill='none' stroke='%23111416' stroke-width='5' stroke-linecap='square' stroke-linejoin='miter'%3E%3Cpath d='M4 16 45 40 4 64'/%3E%3Cpath d='M4 43 45 67 4 91'/%3E%3C/g%3E%3C/svg%3E");
+    background-size:100% 100%;
+    background-position:center;
+    background-repeat:no-repeat;
+  }
+}
