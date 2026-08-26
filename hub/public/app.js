@@ -162,28 +162,134 @@ document.addEventListener('click', async (event) => {
     try { await api(`/api/orders/${remove.dataset.removeOrderFile}/library-files/${remove.dataset.libraryFileId}`, { method: 'DELETE' }); toast('G-code retirado da encomenda.'); update(); } catch (error) { toast(error.message, 'error'); }
   }
 });
-renderProduction = function renderProductionWithProjectDeletion(projects, jobs) {
+let selectedFarmProjectId = null;
+let selectedFarmProject = null;
+
+function projectStatusLabel(status) {
+  return ({ draft: 'Rascunho', active: 'Ativo', paused: 'Pausado', completed: 'Concluído' })[String(status || '').toLowerCase()] || value(status);
+}
+function formatDuration(seconds) {
+  const total = Math.max(0, Number(seconds) || 0);
+  if (!total) return '—';
+  const hours = Math.floor(total / 3600); const minutes = Math.round((total % 3600) / 60);
+  return hours ? `${hours} h ${minutes} m` : `${minutes} min`;
+}
+function farmModelOptions(selected = '') {
+  const models = [...new Set(latest.printers.map((printer) => String(printer.model || '').trim()).filter(Boolean))].sort();
+  return ['<option value="">Selecionar modelo</option>', ...models.map((model) => `<option value="${escape(model)}" ${model === selected ? 'selected' : ''}>${escape(model)}</option>`)].join('');
+}
+function libraryFileOptions() {
+  return ['<option value="">Selecionar G-code da biblioteca</option>', ...libraryFiles.map((file) => `<option value="${escape(file.id)}">${escape(file.original_name)} · ${escape(file.metadata?.quantity || '—')} peças · ${escape(file.metadata?.material || '—')} ${escape(file.metadata?.color || '')}</option>`)].join('');
+}
+function setupProjectWorkspace() {
+  const projectPanel = $('project-list')?.closest('.table-panel');
+  if (!projectPanel || $('project-workspace')) return;
+  const workspace = document.createElement('section');
+  workspace.className = 'project-workspace hidden';
+  workspace.id = 'project-workspace';
+  projectPanel.insertAdjacentElement('afterend', workspace);
+}
+async function refreshSelectedProject() {
+  if (!selectedFarmProjectId) return;
+  selectedFarmProject = await api(`/api/projects/${encodeURIComponent(selectedFarmProjectId)}/details`);
+  renderProjectWorkspace();
+}
+function closeProjectWorkspace() {
+  selectedFarmProjectId = null; selectedFarmProject = null;
+  const workspace = $('project-workspace'); if (workspace) { workspace.classList.add('hidden'); workspace.innerHTML = ''; }
+}
+function projectActions(project) {
+  const status = String(project.status || 'draft').toLowerCase();
+  const controls = [];
+  if (status === 'draft' || status === 'paused') controls.push('<button class="compact" data-project-action="activate">Ativar fila</button>');
+  if (status === 'active') controls.push('<button class="compact secondary" data-project-action="pause">Pausar fila</button>');
+  if (status !== 'completed') controls.push('<button class="compact secondary" data-project-action="complete">Concluir agora</button>');
+  if (status === 'completed') controls.push('<button class="compact" data-project-action="reactivate">Reativar</button>');
+  controls.push('<button class="compact secondary" data-project-action="duplicate">Duplicar</button>');
+  if (status === 'draft') controls.push(`<button class="compact danger" data-delete-project="${escape(project.id)}" data-project-name="${escape(project.name || `Projeto #${project.id}`)}">Apagar</button>`);
+  return controls.join('');
+}
+function partGcodeRows(part) {
+  if (!part.gcodes?.length) return '<p class="empty compact-empty">Ainda não existe G-code associado a esta peça.</p>';
+  return `<div class="farm-gcode-list">${part.gcodes.map((gcode) => `<div class="farm-gcode-row"><div><strong>${escape(gcode.filename)}</strong><small>${escape(gcode.printer_model)} · ${gcode.parts_per_plate} peça(s)/execução · ${formatDuration(gcode.est_print_secs)} · ${gcode.material_grams || '—'} g</small></div><button class="compact danger" data-delete-farm-gcode="${gcode.id}">Retirar</button></div>`).join('')}</div>`;
+}
+function renderProjectWorkspace() {
+  const workspace = $('project-workspace'); if (!workspace) return;
+  if (!selectedFarmProject) { workspace.classList.add('hidden'); return; }
+  const { project, parts } = selectedFarmProject;
+  const target = parts.reduce((sum, part) => sum + (Number(part.target_qty) || 0), 0);
+  const done = parts.reduce((sum, part) => sum + (Number(part.completed_qty) || 0), 0);
+  const active = parts.reduce((sum, part) => sum + (Number(part.active_qty) || 0), 0);
+  const percent = target ? Math.min(100, Math.round((done / target) * 100)) : 0;
+  workspace.classList.remove('hidden');
+  workspace.innerHTML = `<article class="project-console"><div class="project-console-header"><div><button class="text-button" data-close-project>← Projetos</button><p class="eyebrow">PROJETO #${escape(project.id)}</p><h2>${escape(project.name)}</h2><p>${escape(project.description || 'Sem descrição')}</p></div><div class="project-status"><span class="badge ${statusClass(project.status)}">${projectStatusLabel(project.status)}</span><strong>${done} / ${target} peças</strong><small>${active} em produção · ${percent}% concluído</small></div></div><div class="project-progress"><span style="width:${percent}%"></span></div><div class="project-action-bar">${projectActions(project)}</div><form id="project-edit-form" class="project-edit-form"><label>Nome do projeto<input name="name" required maxlength="120" value="${escape(project.name || '')}"></label><label>Descrição<input name="description" maxlength="500" value="${escape(project.description || '')}" placeholder="Notas de produção, cliente ou prazo"></label><button class="compact secondary" type="submit">Guardar alterações</button></form><form id="project-filament-form" class="project-defaults-form"><input type="hidden" name="project_id" value="${escape(project.id)}"><label>Material padrão<input name="required_material" value="${escape(project.required_material || '')}" placeholder="Ex.: PETG"></label><label>Cor padrão<input name="required_color" value="${escape(project.required_color || '')}" placeholder="Ex.: Preto"></label><button class="compact secondary" type="submit">Guardar requisitos</button><small>Estes valores são usados por defeito no despacho automático.</small></form></article><article class="project-parts-panel"><div class="panel-heading"><div><p class="eyebrow">PLANO DE PRODUÇÃO</p><h2>Peças do projeto</h2></div><span>${parts.length} peça(s)</span></div><form id="project-part-form" class="project-part-form"><label>Nova peça<input name="name" required maxlength="120" placeholder="Ex.: Suporte lateral"></label><label>Quantidade a produzir<input name="target_qty" type="number" min="1" step="1" required value="1"></label><button class="compact" type="submit">Adicionar peça</button></form><div class="project-parts-list">${parts.length ? parts.map((part) => {
+    const remaining = Math.max(0, Number(part.target_qty || 0) - Number(part.completed_qty || 0));
+    const dispatch = part.dispatch || {}; const notes = [...(dispatch.reasons || []), ...(dispatch.notes || [])];
+    return `<article class="project-part-card"><div class="part-heading"><div><p class="eyebrow">PEÇA #${escape(part.id)}</p><h3>${escape(part.name)}</h3><p>${part.completed_qty} concluídas · ${part.active_qty || 0} em produção · faltam ${remaining}</p></div><div><span class="badge ${part.status === 'open' ? 'printing' : 'online'}">${part.status === 'open' ? 'Aberta' : 'Fechada'}</span><button class="compact danger" data-delete-part="${part.id}" data-part-name="${escape(part.name)}">Apagar</button></div></div><div class="part-meter"><span style="width:${Math.min(100, (Number(part.completed_qty || 0) / Math.max(1, Number(part.target_qty || 1))) * 100)}%"></span></div><form class="part-edit-form" data-edit-part="${part.id}"><label>Meta<input name="target_qty" type="number" min="1" step="1" value="${escape(part.target_qty)}"></label><label>Peças boas concluídas<input name="completed_qty" type="number" min="0" step="1" value="${escape(part.completed_qty)}"></label><button class="compact secondary" type="submit">Atualizar quantidades</button></form><div class="dispatch-state ${dispatch.dispatchable ? 'ready' : 'blocked'}"><strong>${dispatch.dispatchable ? 'Pronta para despacho automático' : 'A aguardar condições para despacho'}</strong>${notes.length ? `<ul>${notes.map((note) => `<li>${escape(note)}</li>`).join('')}</ul>` : '<small>Existe pelo menos uma impressora compatível e livre.</small>'}</div><section class="part-gcodes"><div class="part-subheading"><h4>G-codes na farm</h4><span>um por modelo de impressora</span></div>${partGcodeRows(part)}<form class="part-gcode-form" data-part-gcode="${part.id}"><label>G-code da biblioteca<select name="file_id" required>${libraryFileOptions()}</select></label><label>Modelo de impressora<select name="printer_model" required>${farmModelOptions()}</select></label><label>Peças por execução<input name="parts_per_plate" type="number" min="1" step="1" value="1" required></label><button class="compact" type="submit">Enviar para a farm</button><small>O ficheiro permanece na Biblioteca e é copiado para a fila do projeto.</small></form></section></article>`;
+  }).join('') : '<p class="empty">Adiciona a primeira peça e define a quantidade a produzir.</p>'}</div></article>`;
+}
+renderProduction = function renderProductionWithFarmProjects(projects, jobs) {
   $('jobs-count').textContent = `${jobs.length} total`;
   $('projects-count').textContent = `${projects.length} total`;
-  $('job-list').innerHTML = jobs.length ? jobs.slice(0, 12).map((job) => `<div class="data-row"><div><strong>${value(job.part_name || job.name, `Trabalho #${job.id}`)}</strong><small>${value(job.printer_name, 'Impressora nao atribuida')}</small></div><span class="badge ${statusClass(job.status)}">${value(job.status)}</span></div>`).join('') : '<p class="empty">Ainda nao existem trabalhos.</p>';
-  $('project-list').innerHTML = projects.length ? projects.slice(0, 12).map((project) => {
-    const urgent = Number(project.priority) > 1;
-    const status = urgent ? 'urgente' : value(project.status);
-    return `<div class="data-row project-row"><div><strong>${value(project.name, `Projeto #${project.id}`)}</strong><small>${value(project.description, 'Sem descricao')}</small></div><div class="project-row-actions"><span class="badge ${urgent ? 'printing' : statusClass(project.status)}">${status}</span><button class="compact danger" data-delete-project="${escape(project.id)}" data-project-name="${escape(project.name || `Projeto #${project.id}`)}">Apagar</button></div></div>`;
-  }).join('') : '<p class="empty">Ainda nao existem projetos.</p>';
+  $('job-list').innerHTML = jobs.length ? jobs.slice(0, 12).map((job) => `<div class="data-row"><div><strong>${value(job.part_name || job.name, `Trabalho #${job.id}`)}</strong><small>${value(job.printer_name, 'Impressora não atribuída')}</small></div><span class="badge ${statusClass(job.status)}">${value(job.status)}</span></div>`).join('') : '<p class="empty">Ainda não existem trabalhos.</p>';
+  $('project-list').innerHTML = projects.length ? projects.map((project, index) => `<div class="data-row project-row ${Number(project.id) === Number(selectedFarmProjectId) ? 'selected' : ''}"><div><strong>${value(project.name, `Projeto #${project.id}`)}</strong><small>${value(project.description, 'Sem descrição')}</small></div><div class="project-row-actions"><span class="badge ${statusClass(project.status)}">${projectStatusLabel(project.status)}</span><button class="compact secondary" data-move-project="${project.id}" data-move-direction="up" ${index === 0 ? 'disabled' : ''}>↑</button><button class="compact secondary" data-move-project="${project.id}" data-move-direction="down" ${index === projects.length - 1 ? 'disabled' : ''}>↓</button><button class="compact" data-open-project="${project.id}">Gerir</button>${String(project.status || 'draft') === 'draft' ? `<button class="compact danger" data-delete-project="${escape(project.id)}" data-project-name="${escape(project.name || `Projeto #${project.id}`)}">Apagar</button>` : ''}</div></div>`).join('') : '<p class="empty">Ainda não existem projetos.</p>';
 };
-document.addEventListener('click', async (event) => {
-  const removeProject = event.target.closest('[data-delete-project]');
-  if (!removeProject) return;
-  const name = removeProject.dataset.projectName || 'este projeto';
-  if (!confirm(`Apagar ${name}? Esta acao remove o projeto e pode remover os trabalhos associados.`)) return;
+document.addEventListener('submit', async (event) => {
+  const form = event.target;
+  if (!form.matches('#project-part-form, #project-edit-form, #project-filament-form, .part-edit-form, .part-gcode-form')) return;
+  event.preventDefault();
+  if (!selectedFarmProject) return;
+  const values = Object.fromEntries(new FormData(form).entries());
   try {
-    await api(`/api/projects/${encodeURIComponent(removeProject.dataset.deleteProject)}`, { method: 'DELETE' });
-    toast('Projeto apagado.');
-    update();
-  } catch (error) {
-    toast(error.message, 'error');
-  }
+    if (form.id === 'project-part-form') await api('/api/parts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...values, project_id: selectedFarmProject.project.id }) });
+    if (form.id === 'project-edit-form') await api(`/api/projects/${selectedFarmProject.project.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+    if (form.id === 'project-filament-form') await api(`/api/projects/${selectedFarmProject.project.id}/filament`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+    if (form.matches('.part-edit-form')) {
+      if (!confirm('Confirmas as quantidades concluídas? Esta alteração pode reabrir ou fechar a peça na fila.')) return;
+      await api(`/api/parts/${form.dataset.editPart}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+    }
+    if (form.matches('.part-gcode-form')) await api(`/api/projects/${selectedFarmProject.project.id}/parts/${form.dataset.partGcode}/library-gcode`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+    toast(form.matches('.part-gcode-form') ? 'G-code copiado para a fila da farm.' : 'Projeto atualizado.');
+    await refreshSelectedProject(); await update();
+  } catch (error) { toast(error.message, 'error'); }
+});
+document.addEventListener('click', async (event) => {
+  const openProject = event.target.closest('[data-open-project]');
+  const closeProject = event.target.closest('[data-close-project]');
+  const removeProject = event.target.closest('[data-delete-project]');
+  const moveProject = event.target.closest('[data-move-project]');
+  const action = event.target.closest('[data-project-action]');
+  const removePart = event.target.closest('[data-delete-part]');
+  const removeFarmGcode = event.target.closest('[data-delete-farm-gcode]');
+  try {
+    if (openProject) { selectedFarmProjectId = Number(openProject.dataset.openProject); await refreshSelectedProject(); return; }
+    if (closeProject) { closeProjectWorkspace(); return; }
+    if (removeProject) {
+      const name = removeProject.dataset.projectName || 'este projeto';
+      if (!confirm(`Apagar ${name}? Esta ação remove as peças, os G-codes e os trabalhos associados.`)) return;
+      await api(`/api/projects/${encodeURIComponent(removeProject.dataset.deleteProject)}`, { method: 'DELETE' });
+      if (Number(removeProject.dataset.deleteProject) === Number(selectedFarmProjectId)) closeProjectWorkspace();
+      toast('Projeto apagado.'); await update(); return;
+    }
+    if (moveProject) {
+      const projects = [...document.querySelectorAll('#project-list [data-open-project]')].map((button) => Number(button.dataset.openProject));
+      const index = projects.indexOf(Number(moveProject.dataset.moveProject)); const next = index + (moveProject.dataset.moveDirection === 'up' ? -1 : 1);
+      if (index < 0 || next < 0 || next >= projects.length) return;
+      [projects[index], projects[next]] = [projects[next], projects[index]];
+      await api('/api/projects/reorder', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: projects }) }); toast('Prioridade da fila atualizada.'); await update(); return;
+    }
+    if (action && selectedFarmProject) {
+      const projectId = selectedFarmProject.project.id; const kind = action.dataset.projectAction;
+      if (kind === 'activate') { await api(`/api/projects/${projectId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'active' }) }); await api('/api/scheduler/dispatch', { method: 'POST' }); toast('Projeto ativado e fila analisada.'); }
+      if (kind === 'pause') { await api(`/api/projects/${projectId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'paused' }) }); toast('Projeto pausado. Não serão enviados novos trabalhos.'); }
+      if (kind === 'complete') { if (!confirm('Concluir o projeto agora? As peças por completar serão fechadas e trabalhos ainda na fila serão cancelados.')) return; await api(`/api/projects/${projectId}/complete`, { method: 'POST' }); toast('Projeto concluído.'); }
+      if (kind === 'reactivate') { await api(`/api/projects/${projectId}/reactivate`, { method: 'POST' }); toast('Projeto reativado.'); }
+      if (kind === 'duplicate') { const name = prompt('Nome da cópia:', `Cópia de ${selectedFarmProject.project.name}`); if (name === null) return; const result = await api(`/api/projects/${projectId}/duplicate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); selectedFarmProjectId = result.project?.id || selectedFarmProjectId; toast('Projeto duplicado como rascunho.'); }
+      await refreshSelectedProject(); await update(); return;
+    }
+    if (removePart) { if (!confirm(`Apagar a peça ${removePart.dataset.partName}? Os trabalhos e G-codes desta peça serão removidos.`)) return; await api(`/api/parts/${removePart.dataset.deletePart}`, { method: 'DELETE' }); toast('Peça apagada.'); await refreshSelectedProject(); await update(); return; }
+    if (removeFarmGcode) { if (!confirm('Retirar este G-code da farm? O ficheiro original permanece na Biblioteca.')) return; await api(`/api/gcodes/${removeFarmGcode.dataset.deleteFarmGcode}`, { method: 'DELETE' }); toast('G-code retirado da farm.'); await refreshSelectedProject(); await update(); }
+  } catch (error) { toast(error.message, 'error'); }
 });
 function setupOverviewLayout() {
   const overview = $('overview');
@@ -237,4 +343,5 @@ function renderOverviewFromCurrent() {
 }
 
 setupOverviewLayout();
+setupProjectWorkspace();
 populateFilaments(); refreshCustomers(); refreshFiles(); update().finally(renderOverviewFromCurrent); setInterval(() => update().finally(renderOverviewFromCurrent), 15000);

@@ -685,3 +685,185 @@ header .brand::after {
 .project-row-actions .compact.danger {
   padding:7px 9px;
 }
+
+/* Project console — Print Farm Manager workflow inside the Production Hub. */
+.project-workspace {
+  margin:22px 0 28px;
+  display:grid;
+  gap:16px;
+}
+
+.project-workspace.hidden { display:none; }
+
+.project-console,
+.project-parts-panel {
+  padding:22px;
+  border:1px solid #343a3f;
+  border-radius:7px;
+  background:linear-gradient(135deg,#161a1d,#101315);
+  box-shadow:0 14px 30px #00000018;
+}
+
+.project-console-header,
+.part-heading,
+.part-subheading {
+  display:flex;
+  align-items:start;
+  justify-content:space-between;
+  gap:18px;
+}
+
+.project-console-header h2 {
+  margin:4px 0 7px;
+  font-family:Impact,"Arial Narrow",sans-serif;
+  font-size:clamp(1.7rem,3vw,2.4rem);
+  letter-spacing:.015em;
+  text-transform:uppercase;
+}
+
+.project-console-header p:not(.eyebrow) { margin:0; color:#aeb6bc; }
+
+.text-button {
+  padding:0;
+  margin:0 0 12px;
+  border:0;
+  background:transparent;
+  color:var(--p3-blue);
+  font:inherit;
+  font-size:.76rem;
+  font-weight:800;
+  cursor:pointer;
+}
+
+.project-status { display:grid; gap:5px; min-width:165px; text-align:right; }
+.project-status strong { color:#f5f5f2; font-size:1.05rem; }
+.project-status small { color:#aeb6bc; font-size:.76rem; }
+
+.project-progress,
+.part-meter {
+  height:7px;
+  overflow:hidden;
+  margin:20px 0;
+  border-radius:99px;
+  background:#090c0e;
+  border:1px solid #263037;
+}
+
+.project-progress span,
+.part-meter span {
+  display:block;
+  height:100%;
+  border-radius:inherit;
+  background:linear-gradient(90deg,var(--p3-blue),#2f9dff);
+  transition:width .25s ease;
+}
+
+.project-action-bar {
+  display:flex;
+  flex-wrap:wrap;
+  gap:9px;
+  padding-bottom:18px;
+  border-bottom:1px solid #2d3439;
+}
+
+.project-defaults-form,
+.project-edit-form,
+.project-part-form,
+.part-edit-form,
+.part-gcode-form {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px;
+  align-items:end;
+}
+
+.project-edit-form { margin-top:18px; grid-template-columns:minmax(0,1fr) minmax(0,2fr) auto; }
+.project-defaults-form { margin-top:12px; grid-template-columns:repeat(2,minmax(0,190px)) auto 1fr; }
+
+.project-defaults-form label,
+.project-edit-form label,
+.project-part-form label,
+.part-edit-form label,
+.part-gcode-form label {
+  display:grid;
+  gap:6px;
+  color:#aeb6bc;
+  font-size:.7rem;
+  font-weight:800;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+}
+
+.project-defaults-form input,
+.project-edit-form input,
+.project-part-form input,
+.part-edit-form input,
+.part-gcode-form input,
+.part-gcode-form select {
+  width:100%;
+  min-width:0;
+  padding:9px 10px;
+  border:1px solid #3b444b;
+  border-radius:5px;
+  background:#0b0e10;
+  color:#f5f5f2;
+  font:inherit;
+  text-transform:none;
+}
+
+.project-defaults-form small,
+.part-gcode-form small {
+  color:#9da7ac;
+  font-size:.72rem;
+  align-self:center;
+}
+
+.project-parts-panel .panel-heading { margin-bottom:17px; }
+.project-parts-panel .panel-heading h2 { margin:4px 0 0; }
+.project-parts-panel .panel-heading > span { color:#aeb6bc; font-size:.78rem; }
+.project-part-form { padding:14px; margin-bottom:14px; border:1px solid #2d3439; border-radius:6px; background:#101416; grid-template-columns:minmax(0,2fr) minmax(135px,.7fr) auto; }
+
+.project-parts-list { display:grid; gap:13px; }
+.project-part-card { padding:17px; border:1px solid #30393f; border-radius:7px; background:#111518; }
+.part-heading h3 { margin:4px 0; font-size:1.05rem; }
+.part-heading p:not(.eyebrow) { margin:0; color:#aeb6bc; font-size:.82rem; }
+.part-heading > div:last-child { display:flex; gap:8px; align-items:center; }
+.part-meter { margin:15px 0; height:6px; }
+.part-edit-form { grid-template-columns:140px 165px auto; padding-bottom:14px; border-bottom:1px solid #2d3439; }
+
+.dispatch-state { margin:14px 0; padding:11px 13px; border-left:3px solid var(--p3-orange); border-radius:4px; background:#1a1712; }
+.dispatch-state.ready { border-color:#4ce492; background:#102018; }
+.dispatch-state strong { display:block; color:#f4ece3; font-size:.8rem; }
+.dispatch-state small,.dispatch-state ul { margin:6px 0 0; color:#bdc5c9; font-size:.75rem; }
+.dispatch-state ul { padding-left:18px; }
+.dispatch-state li + li { margin-top:3px; }
+
+.part-gcodes { padding-top:3px; }
+.part-subheading { align-items:center; margin:0 0 10px; }
+.part-subheading h4 { margin:0; font-size:.88rem; }
+.part-subheading span { color:#9da7ac; font-size:.72rem; }
+.farm-gcode-list { display:grid; gap:7px; margin-bottom:11px; }
+.farm-gcode-row { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 12px; border:1px solid #2a3338; border-radius:5px; background:#0c1012; }
+.farm-gcode-row strong,.farm-gcode-row small { display:block; }
+.farm-gcode-row small { margin-top:4px; color:#aeb6bc; font-size:.72rem; }
+.compact-empty { margin:0 0 12px; }
+.part-gcode-form { grid-template-columns:minmax(0,2fr) minmax(150px,1fr) minmax(120px,.6fr) auto; padding:13px; border:1px dashed #35434b; border-radius:6px; background:#0e1214; }
+.part-gcode-form small { grid-column:1/-1; }
+
+.project-row.selected { margin:0 -8px; padding-right:8px; padding-left:8px; border-radius:5px; background:#008bff13; }
+.project-row .compact:disabled { cursor:not-allowed; opacity:.35; }
+
+@media (max-width:840px) {
+  .project-console-header,.part-heading { flex-direction:column; }
+  .project-status { text-align:left; }
+  .project-defaults-form,.project-edit-form,.project-part-form,.part-edit-form,.part-gcode-form { grid-template-columns:1fr 1fr; }
+  .project-defaults-form small,.part-gcode-form small { grid-column:1/-1; }
+}
+
+@media (max-width:560px) {
+  .project-console,.project-parts-panel { padding:16px; }
+  .project-defaults-form,.project-edit-form,.project-part-form,.part-edit-form,.part-gcode-form { grid-template-columns:1fr; }
+  .project-defaults-form small,.part-gcode-form small { grid-column:auto; }
+  .part-heading > div:last-child { width:100%; justify-content:space-between; }
+  .farm-gcode-row { align-items:start; flex-direction:column; }
+}

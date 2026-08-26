@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const multer = require('multer');
+const FormData = require('form-data');
 const net = require('net');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
@@ -424,13 +425,117 @@ app.post('/api/printers/discover', async (req, res) => {
 });
 app.post('/api/printers', async (req, res) => forwarded(res, await safeRequest('post', `${farmUrl}/api/printers`, req.body)));
 app.post('/api/projects', async (req, res) => forwarded(res, await safeRequest('post', `${farmUrl}/api/projects`, req.body)));
+function positiveProjectId(value) {
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+function projectIdOrError(req, res) {
+  const id = positiveProjectId(req.params.projectId);
+  if (!id) {
+    res.status(400).json({ error: 'Projeto invalido.' });
+    return null;
+  }
+  return id;
+}
+
+// Print Farm Manager project workflow, exposed through the portal so operators do
+// not need to move between two interfaces.
+app.get('/api/projects/:projectId/details', async (req, res) => {
+  const projectId = projectIdOrError(req, res); if (!projectId) return;
+  const projectResult = await safeGet(`${farmUrl}/api/projects/${projectId}`);
+  if (!projectResult.ok) return res.status(404).json({ error: 'Projeto nao encontrado no Print Farm Manager.' });
+  const partsResult = await safeGet(`${farmUrl}/api/parts?project_id=${projectId}`);
+  if (!partsResult.ok) return res.status(502).json({ error: 'Nao foi possivel carregar as pecas deste projeto.' });
+  const parts = Array.isArray(partsResult.data) ? partsResult.data : [];
+  const details = await Promise.all(parts.map(async (part) => {
+    const [gcodes, dispatch] = await Promise.all([
+      safeGet(`${farmUrl}/api/gcodes?part_id=${part.id}`),
+      safeGet(`${farmUrl}/api/parts/${part.id}/dispatch-status`),
+    ]);
+    return {
+      ...part,
+      gcodes: Array.isArray(gcodes.data) ? gcodes.data : [],
+      dispatch: dispatch.ok && dispatch.data ? dispatch.data : { dispatchable: false, reasons: ['Diagnostico de despacho indisponivel.'] },
+    };
+  }));
+  res.json({ project: projectResult.data, parts: details });
+});
+app.put('/api/projects/reorder', async (req, res) => forwarded(res, await safeRequest('put', `${farmUrl}/api/projects/reorder`, req.body), 200));
+app.put('/api/projects/:projectId', async (req, res) => {
+  const projectId = projectIdOrError(req, res); if (!projectId) return;
+  forwarded(res, await safeRequest('put', `${farmUrl}/api/projects/${projectId}`, req.body), 200);
+});
+app.put('/api/projects/:projectId/filament', async (req, res) => {
+  const projectId = projectIdOrError(req, res); if (!projectId) return;
+  forwarded(res, await safeRequest('put', `${farmUrl}/api/projects/${projectId}/filament`, req.body), 200);
+});
+app.post('/api/projects/:projectId/complete', async (req, res) => {
+  const projectId = projectIdOrError(req, res); if (!projectId) return;
+  forwarded(res, await safeRequest('post', `${farmUrl}/api/projects/${projectId}/complete`, {}), 200);
+});
+app.post('/api/projects/:projectId/reactivate', async (req, res) => {
+  const projectId = projectIdOrError(req, res); if (!projectId) return;
+  forwarded(res, await safeRequest('post', `${farmUrl}/api/projects/${projectId}/reactivate`, {}), 200);
+});
+app.post('/api/projects/:projectId/duplicate', async (req, res) => {
+  const projectId = projectIdOrError(req, res); if (!projectId) return;
+  forwarded(res, await safeRequest('post', `${farmUrl}/api/projects/${projectId}/duplicate`, req.body || {}), 201);
+});
 app.delete('/api/projects/:projectId', async (req, res) => {
-  const projectId = Number(req.params.projectId);
-  if (!Number.isInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Projeto invalido.' });
+  const projectId = projectIdOrError(req, res); if (!projectId) return;
   const result = await safeRequest('delete', `${farmUrl}/api/projects/${projectId}`);
   if (!result.ok) return res.status(result.status || 502).json({ error: result.error || 'Nao foi possivel apagar o projeto.' });
   res.status(204).end();
 });
+app.post('/api/parts', async (req, res) => forwarded(res, await safeRequest('post', `${farmUrl}/api/parts`, req.body)));
+app.put('/api/parts/:partId', async (req, res) => {
+  const partId = positiveProjectId(req.params.partId);
+  if (!partId) return res.status(400).json({ error: 'Peca invalida.' });
+  forwarded(res, await safeRequest('put', `${farmUrl}/api/parts/${partId}`, req.body), 200);
+});
+app.delete('/api/parts/:partId', async (req, res) => {
+  const partId = positiveProjectId(req.params.partId);
+  if (!partId) return res.status(400).json({ error: 'Peca invalida.' });
+  const result = await safeRequest('delete', `${farmUrl}/api/parts/${partId}`);
+  if (!result.ok) return res.status(result.status || 502).json({ error: result.error || 'Nao foi possivel apagar a peca.' });
+  res.status(204).end();
+});
+app.delete('/api/gcodes/:gcodeId', async (req, res) => {
+  const gcodeId = positiveProjectId(req.params.gcodeId);
+  if (!gcodeId) return res.status(400).json({ error: 'G-code invalido.' });
+  const result = await safeRequest('delete', `${farmUrl}/api/gcodes/${gcodeId}`);
+  if (!result.ok) return res.status(result.status || 502).json({ error: result.error || 'Nao foi possivel apagar o G-code da farm.' });
+  res.status(204).end();
+});
+app.post('/api/projects/:projectId/parts/:partId/library-gcode', async (req, res) => {
+  const projectId = projectIdOrError(req, res); if (!projectId) return;
+  const partId = positiveProjectId(req.params.partId);
+  if (!partId) return res.status(400).json({ error: 'Peca invalida.' });
+  const saved = state();
+  const libraryFile = getLibraryFile(saved, clean(req.body?.file_id, 80));
+  const printerModel = clean(req.body?.printer_model, 100);
+  const partsPerPlate = Math.max(1, Math.floor(Number(req.body?.parts_per_plate || libraryFile?.metadata?.quantity)));
+  if (!libraryFile || !printerModel || !Number.isFinite(partsPerPlate)) return res.status(400).json({ error: 'Seleciona um G-code, um modelo de impressora e a quantidade por execucao.' });
+  const partResult = await safeGet(`${farmUrl}/api/parts/${partId}`);
+  if (!partResult.ok || Number(partResult.data?.project_id) !== projectId) return res.status(404).json({ error: 'A peca nao pertence a este projeto.' });
+  const diskFile = path.join(uploadsDir, libraryFile.stored_name);
+  if (!fs.existsSync(diskFile)) return res.status(410).json({ error: 'O ficheiro fisico ja nao existe na biblioteca.' });
+  const form = new FormData();
+  form.append('file', fs.createReadStream(diskFile), { filename: libraryFile.original_name, contentType: 'application/octet-stream' });
+  form.append('part_id', String(partId));
+  form.append('parts_per_plate', String(partsPerPlate));
+  form.append('printer_model', printerModel);
+  if (libraryFile.metadata?.filament_grams) form.append('material_grams', String(libraryFile.metadata.filament_grams));
+  if (clean(req.body?.required_material || libraryFile.metadata?.material, 80)) form.append('required_material', clean(req.body?.required_material || libraryFile.metadata?.material, 80));
+  if (clean(req.body?.required_color || libraryFile.metadata?.color, 80)) form.append('required_color', clean(req.body?.required_color || libraryFile.metadata?.color, 80));
+  try {
+    const response = await client.post(`${farmUrl}/api/gcodes/upload`, form, { headers: form.getHeaders(), timeout: 30000, maxContentLength: Infinity, maxBodyLength: Infinity });
+    res.status(201).json(response.data);
+  } catch (error) {
+    res.status(error.response?.status || 502).json({ error: error.response?.data?.error || 'Nao foi possivel enviar o G-code para a farm.' });
+  }
+});
+app.post('/api/scheduler/dispatch', async (_req, res) => forwarded(res, await safeRequest('post', `${farmUrl}/api/scheduler/dispatch`, {}), 200));
 app.post('/api/spools', async (req, res) => { const { filament_id, remaining_weight } = req.body || {}; if (!filament_id) return res.status(400).json({ error: 'Seleciona um filamento antes de criar a bobine.' }); forwarded(res, await safeRequest('post', `${spoolmanUrl}/api/v1/spool`, { filament_id: Number(filament_id), used_weight: 0, ...(remaining_weight ? { initial_weight: Number(remaining_weight) } : {}) })); });
 app.get('/api/filaments', async (_req, res) => { const result = await safeGet(`${spoolmanUrl}/api/v1/filament`); result.ok ? res.json(Array.isArray(result.data) ? result.data : []) : res.status(502).json({ error: 'Não foi possível obter os filamentos do Spoolman.' }); });
 app.post('/api/assignments', (req, res) => { const { printer_id, spool_id } = req.body || {}; if (!printer_id || !spool_id) return res.status(400).json({ error: 'Impressora e bobine são obrigatórias.' }); const saved = state(); saved.assignments[String(printer_id)] = { spool_id: Number(spool_id), assigned_at: new Date().toISOString() }; save(saved); res.status(201).json(saved.assignments[String(printer_id)]); });
