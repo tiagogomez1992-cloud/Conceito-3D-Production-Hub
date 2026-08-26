@@ -26,7 +26,57 @@ const execFileAsync = promisify(execFile);
 fs.mkdirSync(uploadsDir, { recursive: true });
 app.use(express.json({ limit: '256kb' }));
 
-function state() { try { return { assignments: {}, consumption: [], orders: [], customers: [], files: [], ...JSON.parse(fs.readFileSync(stateFile, 'utf8')) }; } catch { return { assignments: {}, consumption: [], orders: [], customers: [], files: [] }; } }
+function emptyState() { return { assignments: {}, consumption: [], orders: [], customers: [], files: [], library_parts: [] }; }
+function libraryPartName(value) { return clean(value, 120).replace(/\s+/g, ' ').toLocaleUpperCase('pt-PT'); }
+function partNameFromFile(file) {
+  return libraryPartName(path.basename(file.original_name || 'PECA', path.extname(file.original_name || ''))
+    .replace(/[_-]+/g, ' ')) || 'PECA';
+}
+function migrateState(raw) {
+  const value = { ...emptyState(), ...(raw && typeof raw === 'object' ? raw : {}) };
+  value.files = Array.isArray(value.files) ? value.files : [];
+  value.orders = Array.isArray(value.orders) ? value.orders : [];
+  value.library_parts = Array.isArray(value.library_parts) ? value.library_parts : [];
+  let changed = !Array.isArray(raw?.library_parts);
+  const usedNames = new Set(value.library_parts.map((part) => libraryPartName(part.name)).filter(Boolean));
+
+  for (const part of value.library_parts) {
+    const normalized = libraryPartName(part.name);
+    if (part.name !== normalized) { part.name = normalized; changed = true; }
+  }
+  for (const file of value.files) {
+    if (!file.part_id || !value.library_parts.some((part) => part.id === file.part_id)) {
+      const baseName = partNameFromFile(file);
+      let name = baseName; let suffix = 2;
+      while (usedNames.has(name)) name = `${baseName} ${suffix++}`;
+      const part = { id: crypto.randomUUID(), name, description: '', created_at: file.created_at || new Date().toISOString(), updated_at: new Date().toISOString() };
+      value.library_parts.push(part); usedNames.add(name); file.part_id = part.id; changed = true;
+    }
+    if (file.printer_model === undefined) { file.printer_model = clean(file.metadata?.printer_model, 100); changed = true; }
+    if (file.active === undefined) { file.active = true; changed = true; }
+  }
+  for (const order of value.orders) {
+    if (!Array.isArray(order.library_parts)) {
+      const legacy = Array.isArray(order.library_files) ? order.library_files : (order.library_file_id ? [{ file_id: order.library_file_id, requested_quantity: null }] : []);
+      const byPart = new Map();
+      for (const entry of legacy) {
+        const file = value.files.find((candidate) => candidate.id === entry?.file_id);
+        if (!file?.part_id) continue;
+        byPart.set(file.part_id, { part_id: file.part_id, requested_quantity: entry.requested_quantity, selected_file_id: file.id });
+      }
+      order.library_parts = [...byPart.values()]; changed = true;
+    }
+  }
+  return { value, changed };
+}
+function state() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    const migrated = migrateState(parsed);
+    if (migrated.changed) save(migrated.value);
+    return migrated.value;
+  } catch { return emptyState(); }
+}
 function save(value) { fs.writeFileSync(stateFile, JSON.stringify(value, null, 2)); }
 function clean(value, max = 500) { return String(value || '').trim().slice(0, max); }
 function number(value) { const n = Number(String(value || '').replace(',', '.')); return Number.isFinite(n) ? n : null; }
@@ -34,11 +84,32 @@ function orderId() { return `C3D-${new Date().getFullYear()}-${String(Date.now()
 function getOrder(value, id) { return value.orders.find((item) => item.id === id); }
 function getCustomer(value, id) { return value.customers.find((item) => item.id === id); }
 function getLibraryFile(value, id) { return value.files.find((item) => item.id === id); }
+function getLibraryPart(value, id) { return value.library_parts.find((item) => item.id === id); }
+function libraryPartFiles(value, id, activeOnly = false) { return value.files.filter((item) => item.part_id === id && (!activeOnly || item.active !== false)); }
 function orderLibraryFiles(order) {
   if (Array.isArray(order.library_files)) return order.library_files.filter((entry) => entry?.file_id);
   return order.library_file_id ? [{ file_id: order.library_file_id, requested_quantity: null }] : [];
 }
 function orderGcodePlan(value, order) {
+  if (Array.isArray(order.library_parts) && order.library_parts.length) return order.library_parts.flatMap((entry) => {
+    const part = getLibraryPart(value, entry.part_id);
+    if (!part) return [];
+    const allVariants = libraryPartFiles(value, part.id, true);
+    const matchingPrinter = clean(order.printer_model, 100) ? allVariants.filter((file) => file.printer_model === order.printer_model) : [];
+    const variants = matchingPrinter.length ? matchingPrinter : allVariants;
+    const requestedQuantity = Math.max(1, Math.floor(Number(entry.requested_quantity) || 1));
+    const selected = variants.find((file) => file.id === entry.selected_file_id) || [...variants].sort((left, right) => {
+      const leftYield = Math.max(1, Math.floor(Number(left.metadata?.quantity) || 1));
+      const rightYield = Math.max(1, Math.floor(Number(right.metadata?.quantity) || 1));
+      const leftExcess = Math.ceil(requestedQuantity / leftYield) * leftYield - requestedQuantity;
+      const rightExcess = Math.ceil(requestedQuantity / rightYield) * rightYield - requestedQuantity;
+      return leftExcess - rightExcess || Math.ceil(requestedQuantity / leftYield) - Math.ceil(requestedQuantity / rightYield);
+    })[0];
+    if (!selected) return [];
+    const piecesPerRun = Math.max(1, Math.floor(Number(selected.metadata?.quantity) || 1));
+    const runs = Math.ceil(requestedQuantity / piecesPerRun);
+    return [{ part, file: selected, requested_quantity: requestedQuantity, pieces_per_run: piecesPerRun, runs, produced_quantity: runs * piecesPerRun, excess_quantity: runs * piecesPerRun - requestedQuantity, grams: runs * (Number(selected.metadata?.filament_grams) || 0) }];
+  });
   return orderLibraryFiles(order).flatMap((entry) => {
     const file = getLibraryFile(value, entry.file_id);
     if (!file) return [];
@@ -294,20 +365,66 @@ app.get('/api/summary', async (_req, res) => {
   res.json({ generatedAt: new Date().toISOString(), services: { printFarmManager: health.ok, spoolman: spools.ok }, system: { hostname: os.hostname(), uptime_seconds: os.uptime(), memory_total_mb: Math.round(os.totalmem() / 1048576), memory_used_mb: Math.round((os.totalmem() - os.freemem()) / 1048576), cpu_load_1m: Number(os.loadavg()[0].toFixed(2)) }, printers: { total: printerItems.length, online: printerItems.filter((item) => online.has(String(item.status || '').toUpperCase())).length, printing: printerItems.filter((item) => String(item.status || '').toUpperCase() === 'PRINTING').length, items: printerItems }, spools: { total: spoolItems.length, low: spoolItems.filter((item) => Number(item.remaining_weight || 0) > 0 && Number(item.remaining_weight || 0) < 200).length, items: spoolItems }, production: { projects: Array.isArray(projects.data) ? projects.data : [], jobs: Array.isArray(jobs.data) ? jobs.data : [], orders }, assignments: saved.assignments, consumption: saved.consumption.slice(0, 20) });
 });
 
+function libraryParts(value) {
+  return [...value.library_parts]
+    .sort((left, right) => left.name.localeCompare(right.name, 'pt-PT'))
+    .map((part) => ({ ...part, gcodes: libraryPartFiles(value, part.id).sort((left, right) => String(right.created_at).localeCompare(String(left.created_at))) }));
+}
+app.get('/api/library-parts', (_req, res) => { const saved = state(); res.json(libraryParts(saved)); });
+app.post('/api/library-parts', (req, res) => {
+  const name = libraryPartName(req.body?.name);
+  if (!name) return res.status(400).json({ error: 'O nome da peça é obrigatório.' });
+  const saved = state();
+  if (saved.library_parts.some((part) => part.name === name)) return res.status(409).json({ error: 'Já existe uma peça com este nome.' });
+  const now = new Date().toISOString();
+  const item = { id: crypto.randomUUID(), name, description: clean(req.body?.description, 500), created_at: now, updated_at: now };
+  saved.library_parts.push(item); save(saved); res.status(201).json({ ...item, gcodes: [] });
+});
+app.put('/api/library-parts/:id', (req, res) => {
+  const saved = state(); const item = getLibraryPart(saved, req.params.id);
+  if (!item) return res.status(404).json({ error: 'Peça não encontrada.' });
+  const name = libraryPartName(req.body?.name);
+  if (!name) return res.status(400).json({ error: 'O nome da peça é obrigatório.' });
+  if (saved.library_parts.some((part) => part.id !== item.id && part.name === name)) return res.status(409).json({ error: 'Já existe uma peça com este nome.' });
+  item.name = name; item.description = clean(req.body?.description, 500); item.updated_at = new Date().toISOString(); save(saved);
+  res.json({ ...item, gcodes: libraryPartFiles(saved, item.id) });
+});
+app.delete('/api/library-parts/:id', (req, res) => {
+  const saved = state(); const item = getLibraryPart(saved, req.params.id);
+  if (!item) return res.status(404).json({ error: 'Peça não encontrada.' });
+  if (libraryPartFiles(saved, item.id).length) return res.status(409).json({ error: 'Remove primeiro os G-codes desta peça.' });
+  if (saved.orders.some((order) => order.library_parts?.some((entry) => entry.part_id === item.id))) return res.status(409).json({ error: 'Esta peça está associada a uma encomenda e não pode ser removida.' });
+  saved.library_parts = saved.library_parts.filter((part) => part.id !== item.id); save(saved); res.status(204).end();
+});
+
 app.get('/api/files', (_req, res) => res.json([...state().files].sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))));
 app.post('/api/files', upload.single('gcode'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Seleciona um ficheiro G-code.' });
+  const saved = state(); const part = getLibraryPart(saved, clean(req.body?.part_id, 80));
+  const printerModel = clean(req.body?.printer_model, 100);
+  if (!part || !printerModel) { fs.rmSync(req.file.path, { force: true }); return res.status(400).json({ error: 'Seleciona uma peça e indica a impressora ou perfil compatível.' }); }
   const contents = fs.readFileSync(req.file.path, 'utf8').slice(0, 4 * 1024 * 1024);
   const metadata = gcodeMetadata(contents, req.body || {});
   if (!metadata.valid) { fs.rmSync(req.file.path, { force: true }); return res.status(400).json({ error: `Preenche os campos obrigatórios: ${metadata.missing.join(', ')}.` }); }
-  const saved = state(); const id = crypto.randomUUID(); const thumbnail = gcodeThumbnail(contents, id, req.file.originalname, metadata);
-  const item = { id, original_name: clean(req.file.originalname, 255), stored_name: req.file.filename, size_bytes: req.file.size, metadata, thumbnail, created_at: new Date().toISOString() };
+  const id = crypto.randomUUID(); const thumbnail = gcodeThumbnail(contents, id, req.file.originalname, metadata);
+  const item = { id, part_id: part.id, original_name: clean(req.file.originalname, 255), stored_name: req.file.filename, size_bytes: req.file.size, printer_model: printerModel, active: true, metadata, thumbnail, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
   saved.files.unshift(item); save(saved); res.status(201).json(item);
 });
+app.put('/api/files/:id', (req, res) => {
+  const saved = state(); const file = getLibraryFile(saved, req.params.id);
+  if (!file) return res.status(404).json({ error: 'G-code não encontrado.' });
+  const printerModel = clean(req.body?.printer_model, 100);
+  const metadata = gcodeMetadata('', req.body || {});
+  if (!printerModel || !metadata.valid) return res.status(400).json({ error: `Preenche a impressora e os campos técnicos obrigatórios${metadata.missing.length ? `: ${metadata.missing.join(', ')}` : '.'}` });
+  metadata.filament_grams = number(req.body?.filament_grams) || file.metadata?.filament_grams || null;
+  file.printer_model = printerModel; file.metadata = metadata; file.active = req.body?.active !== false && String(req.body?.active) !== 'false'; file.updated_at = new Date().toISOString();
+  save(saved); res.json(file);
+});
 app.delete('/api/files/:id', (req, res) => {
-  const referenced = state().orders.some((order) => orderLibraryFiles(order).some((entry) => entry.file_id === req.params.id));
+  const current = state(); const target = getLibraryFile(current, req.params.id);
+  const referenced = current.orders.some((order) => orderLibraryFiles(order).some((entry) => entry.file_id === req.params.id) || order.library_parts?.some((entry) => entry.selected_file_id === req.params.id || (entry.part_id === target?.part_id && !entry.selected_file_id && libraryPartFiles(current, target.part_id, true).length <= 1)));
   if (referenced) return res.status(409).json({ error: 'Este G-code está associado a uma encomenda. Remove primeiro a associação; o ficheiro permanece na biblioteca.' });
-  const saved = state(); const file = getLibraryFile(saved, req.params.id); if (!file) return res.status(404).json({ error: 'Ficheiro não encontrado.' });
+  const saved = current; const file = target; if (!file) return res.status(404).json({ error: 'Ficheiro não encontrado.' });
   for (const name of [file.stored_name, file.thumbnail?.stored_name]) if (name) fs.rmSync(path.join(uploadsDir, name), { force: true });
   saved.files = saved.files.filter((item) => item.id !== file.id); save(saved); res.status(204).end();
 });
@@ -361,12 +478,12 @@ app.post('/api/orders/import-pdf', pdfUpload.single('pdf'), async (req, res) => 
 });
 app.post('/api/orders', (req, res) => {
   if (!clean(req.body?.title, 120)) return res.status(400).json({ error: 'O nome da encomenda é obrigatório.' });
-  const saved = state(); const customer = clean(req.body?.customer_id, 80) ? getCustomer(saved, req.body.customer_id) : null; const item = { id: orderId(), title: clean(req.body.title, 120), customer_id: customer?.id || null, customer: customer?.name || clean(req.body.customer, 120), due_date: clean(req.body.due_date, 20) || null, priority: Math.min(2, Math.max(0, Number(req.body.priority) || 0)), notes: clean(req.body.notes, 1000), status: 'received', printer_id: null, files: [], library_files: [], items: Array.isArray(req.body.items) ? req.body.items.slice(0, 100) : [], document: req.body.document || null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+  const saved = state(); const customer = clean(req.body?.customer_id, 80) ? getCustomer(saved, req.body.customer_id) : null; const item = { id: orderId(), title: clean(req.body.title, 120), customer_id: customer?.id || null, customer: customer?.name || clean(req.body.customer, 120), due_date: clean(req.body.due_date, 20) || null, priority: Math.min(2, Math.max(0, Number(req.body.priority) || 0)), notes: clean(req.body.notes, 1000), status: 'received', printer_id: null, files: [], library_files: [], library_parts: [], items: Array.isArray(req.body.items) ? req.body.items.slice(0, 100) : [], document: req.body.document || null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
   saved.orders.unshift(item); save(saved); res.status(201).json(item);
 });
 app.patch('/api/orders/:id', (req, res) => {
   const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
-  for (const key of ['status', 'printer_id', 'due_date', 'notes']) if (req.body?.[key] !== undefined) item[key] = req.body[key];
+  for (const key of ['status', 'printer_id', 'printer_model', 'due_date', 'notes']) if (req.body?.[key] !== undefined) item[key] = req.body[key];
   if (req.body?.priority !== undefined) item.priority = Math.min(2, Math.max(0, Number(req.body.priority) || 0));
   item.updated_at = new Date().toISOString(); save(saved); res.json(item);
 });
@@ -399,6 +516,42 @@ app.delete('/api/orders/:id/library-files/:fileId', (req, res) => {
   const before = orderLibraryFiles(item); const remaining = before.filter((entry) => entry.file_id !== req.params.fileId);
   if (before.length === remaining.length) return res.status(404).json({ error: 'Este G-code não está associado à encomenda.' });
   item.library_files = remaining; delete item.library_file_id; item.updated_at = new Date().toISOString(); save(saved); res.status(204).end();
+});
+app.post('/api/orders/:id/library-parts', (req, res) => {
+  const saved = state(); const item = getOrder(saved, req.params.id);
+  if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
+  const part = getLibraryPart(saved, clean(req.body?.part_id, 80));
+  const requestedQuantity = Math.floor(Number(req.body?.requested_quantity));
+  if (!part) return res.status(404).json({ error: 'Peça não encontrada na biblioteca.' });
+  if (!libraryPartFiles(saved, part.id, true).length) return res.status(409).json({ error: 'Esta peça não tem nenhum G-code ativo.' });
+  if (!Number.isInteger(requestedQuantity) || requestedQuantity < 1) return res.status(400).json({ error: 'Indica uma quantidade pedida válida.' });
+  item.library_parts = Array.isArray(item.library_parts) ? item.library_parts : [];
+  const existing = item.library_parts.find((entry) => entry.part_id === part.id);
+  if (existing) existing.requested_quantity = requestedQuantity;
+  else item.library_parts.push({ part_id: part.id, requested_quantity: requestedQuantity, selected_file_id: null });
+  item.updated_at = new Date().toISOString(); save(saved);
+  res.status(existing ? 200 : 201).json({ order: item, plan: orderGcodePlan(saved, item) });
+});
+app.put('/api/orders/:id/library-parts/:partId/gcode', (req, res) => {
+  const saved = state(); const item = getOrder(saved, req.params.id);
+  if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
+  const entry = item.library_parts?.find((candidate) => candidate.part_id === req.params.partId);
+  if (!entry) return res.status(404).json({ error: 'A peça não está associada a esta encomenda.' });
+  const fileId = clean(req.body?.file_id, 80);
+  if (fileId) {
+    const file = getLibraryFile(saved, fileId);
+    if (!file || file.part_id !== entry.part_id || file.active === false) return res.status(400).json({ error: 'Seleciona um G-code ativo desta peça.' });
+    entry.selected_file_id = file.id;
+  } else entry.selected_file_id = null;
+  item.updated_at = new Date().toISOString(); save(saved); res.json({ order: item, plan: orderGcodePlan(saved, item) });
+});
+app.delete('/api/orders/:id/library-parts/:partId', (req, res) => {
+  const saved = state(); const item = getOrder(saved, req.params.id);
+  if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
+  const before = Array.isArray(item.library_parts) ? item.library_parts : [];
+  const remaining = before.filter((entry) => entry.part_id !== req.params.partId);
+  if (before.length === remaining.length) return res.status(404).json({ error: 'Esta peça não está associada à encomenda.' });
+  item.library_parts = remaining; item.updated_at = new Date().toISOString(); save(saved); res.status(204).end();
 });
 app.post('/api/orders/:id/files', upload.single('gcode'), (req, res) => {
   const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
@@ -539,6 +692,26 @@ async function copyLibraryGcodeToFarm({ partId, libraryFile, printerModel, parts
 app.post('/api/projects/:projectId/library-part', async (req, res) => {
   const projectId = projectIdOrError(req, res); if (!projectId) return;
   const saved = state();
+  const libraryPart = getLibraryPart(saved, clean(req.body?.library_part_id, 80));
+  if (libraryPart) {
+    const targetQty = Math.floor(Number(req.body?.target_qty));
+    const variants = libraryPartFiles(saved, libraryPart.id, true);
+    if (!Number.isInteger(targetQty) || targetQty < 1) return res.status(400).json({ error: 'Indica uma quantidade válida para a peça.' });
+    if (!variants.length) return res.status(409).json({ error: 'A peça não tem G-codes ativos.' });
+    if (variants.some((file) => !clean(file.printer_model, 100))) return res.status(409).json({ error: 'Todos os G-codes ativos precisam de uma impressora ou perfil definido.' });
+    const partResult = await safeRequest('post', `${farmUrl}/api/parts`, { project_id: projectId, name: libraryPart.name, target_qty: targetQty });
+    if (!partResult.ok) return res.status(partResult.status || 502).json({ error: partResult.error || 'Não foi possível criar a peça na farm.' });
+    const copied = [];
+    for (const file of variants) {
+      const result = await copyLibraryGcodeToFarm({ partId: partResult.data.id, libraryFile: file, printerModel: file.printer_model, partsPerPlate: piecesPerExecution(undefined, file), requiredMaterial: file.metadata?.material, requiredColor: file.metadata?.color });
+      if (!result.ok) {
+        await safeRequest('delete', `${farmUrl}/api/parts/${partResult.data.id}`);
+        return res.status(result.status || 502).json({ error: `Falha ao copiar ${file.original_name}: ${result.error}` });
+      }
+      copied.push(result.data);
+    }
+    return res.status(201).json({ part: partResult.data, gcodes: copied });
+  }
   const libraryFile = getLibraryFile(saved, clean(req.body?.file_id, 80));
   const printerModel = clean(req.body?.printer_model, 100);
   const targetQty = Math.floor(Number(req.body?.target_qty));
@@ -582,6 +755,6 @@ app.post('/api/consume', async (req, res) => { const spoolId = Number(req.body?.
 app.use((error, _req, res, _next) => res.status(400).json({ error: error.message || 'Não foi possível processar o ficheiro.' }));
 app.use('/uploads', express.static(uploadsDir));
 app.use(express.static(path.join(__dirname, 'public')));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '0.4.0' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '0.5.0' }));
 app.get(/.*/, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 app.listen(port, () => console.log(`Conceito 3D Production Hub listening on ${port}`));

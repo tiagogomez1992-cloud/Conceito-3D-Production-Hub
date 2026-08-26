@@ -1,11 +1,12 @@
 {
   "name": "conceito3d-production-hub",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Unified dashboard for Conceito 3D print operations.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "axios": "^1.8.4",

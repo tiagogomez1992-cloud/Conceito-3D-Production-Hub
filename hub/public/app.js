@@ -2,6 +2,7 @@ const $ = (id) => document.getElementById(id);
 let latest = { printers: [], spools: [], assignments: {}, orders: [] };
 let customers = [];
 let libraryFiles = [];
+let libraryParts = [];
 let templatePreview = null;
 let templateFields = [];
 let templateDrag = null;
@@ -27,7 +28,18 @@ function renderProduction(projects, jobs) { $('jobs-count').textContent = `${job
 function renderOrders() { $('orders-total').textContent = latest.orders.filter((o) => o.status !== 'completed').length; $('orders-urgent').textContent = `${latest.orders.filter((o) => Number(o.priority) === 2 && o.status !== 'completed').length} urgentes`; $('order-board').innerHTML = latest.orders.length ? latest.orders.map((o) => { const file = o.files?.[0]; const meta = file?.metadata; const source = o.document?.file_name ? `<span>PDF: ${escape(o.document.file_name)}${o.document.ocr_used ? ' · OCR' : ''}</span>` : ''; const items = o.items?.length ? `<span>${o.items.length} linha(s) lida(s) no PDF</span>` : ''; const printerOptions = ['<option value="">Atribuir impressora</option>', ...latest.printers.map((p) => `<option value="${p.id}" ${Number(o.printer_id) === Number(p.id) ? 'selected' : ''}>${escape(p.name)}</option>`)].join(''); return `<article class="order-card ${Number(o.priority) === 2 ? 'urgent' : ''}"><div class="order-top"><div><p class="eyebrow">${escape(o.id)}</p><h2>${escape(o.title)}</h2><p>${escape(o.customer || 'Sem cliente')} · ${o.due_date ? escape(o.due_date) : 'Sem prazo'}</p></div><span class="badge ${o.status === 'completed' ? 'online' : Number(o.priority) === 2 ? 'printing' : 'offline'}">${escape(o.status)}</span></div><div class="order-meta">${source}${items}${meta ? `<span>${meta.valid ? '✓ Metadados validados' : `⚠ Falta: ${escape(meta.missing.join(', '))}`}</span><span>${meta.quantity || '—'} peças · ${escape(meta.material || '—')} · bico ${meta.nozzle || '—'} mm</span>` : '<span>Sem G-code</span>'}</div><div class="order-actions"><label>Impressora<select data-order-printer="${escape(o.id)}">${printerOptions}</select></label><label class="file-upload">G-code<input type="file" accept=".gcode,.gco" data-file-order="${escape(o.id)}"><span>Enviar G-code</span></label>${o.status !== 'completed' ? `<button class="compact" data-complete-order="${escape(o.id)}">Concluir</button>` : ''}</div></article>`; }).join('') : '<p class="empty">Ainda não existem encomendas.</p>'; }
 function renderOrderRemovalButtons() { document.querySelectorAll('#order-board .order-card').forEach((card, index) => { const order = latest.orders[index]; const actions = card.querySelector('.order-actions'); if (order && actions) actions.insertAdjacentHTML('beforeend', `<button class="compact danger" data-delete-order="${escape(order.id)}">Remover</button>`); }); }
 function renderOrderLibrarySelectors() { document.querySelectorAll('#order-board .order-card').forEach((card, index) => { const order = latest.orders[index]; const actions = card.querySelector('.order-actions'); if (!order || !actions) return; card.querySelector('.file-upload')?.remove(); const selected = order.library_file_id || ''; const options = ['<option value="">Associar G-code da biblioteca</option>', ...libraryFiles.map((file) => `<option value="${file.id}" ${file.id === selected ? 'selected' : ''}>${escape(file.original_name)} · ${escape(file.metadata?.material || '—')} ${escape(file.metadata?.color || '')}</option>`)].join(''); actions.insertAdjacentHTML('beforeend', `<label>G-code<select data-order-library-file="${escape(order.id)}">${options}</select></label>`); const file = libraryFiles.find((entry) => entry.id === selected); if (file) card.querySelector('.order-meta')?.insertAdjacentHTML('afterbegin', `<span>G-code: ${escape(file.original_name)} · ${escape(file.metadata?.quantity)} peças · ${escape(file.metadata?.material)} ${escape(file.metadata?.color)}</span>`); }); }
-function renderFiles() { $('file-grid').innerHTML = libraryFiles.length ? libraryFiles.map((file) => { const meta = file.metadata || {}; return `<article class="file-card"><img src="${escape(file.thumbnail?.url || '')}" alt="Thumbnail de ${escape(file.original_name)}"><div class="file-card-body"><p class="eyebrow">${file.thumbnail?.embedded ? 'PREVIEW DO SLICER' : 'FICHEIRO G-CODE'}</p><h2>${escape(file.original_name)}</h2><p>${escape(meta.material || '—')} · ${escape(meta.color || '—')}</p><dl><div><dt>Peças</dt><dd>${escape(meta.quantity || '—')}</dd></div><div><dt>Bico</dt><dd>${escape(meta.nozzle || '—')} mm</dd></div><div><dt>Tamanho</dt><dd>${Math.max(1, Math.round(Number(file.size_bytes || 0) / 1024))} KB</dd></div></dl><button class="compact secondary" data-delete-file="${file.id}">Remover</button></div></article>`; }).join('') : '<p class="empty">Ainda não existem G-codes guardados.</p>'; }
+function printerModelChoices(selected = '') {
+  const models = [...new Set(latest.printers.map((printer) => String(printer.model || '').trim()).filter(Boolean))].sort();
+  return `<option value="">Selecionar perfil</option>${models.map((model) => `<option value="${escape(model)}" ${model === selected ? 'selected' : ''}>${escape(model)}</option>`).join('')}`;
+}
+function libraryGcodeEditor(file) {
+  const meta = file.metadata || {};
+  return `<article class="library-gcode-row ${file.active === false ? 'inactive' : ''}"><img src="${escape(file.thumbnail?.url || '')}" alt="Pré-visualização de ${escape(file.original_name)}"><div class="library-gcode-main"><div class="library-gcode-title"><div><strong>${escape(file.original_name)}</strong><small>${Math.max(1, Math.round(Number(file.size_bytes || 0) / 1024))} KB · ${file.active === false ? 'Inativo' : 'Ativo'}</small></div><button class="compact danger" data-delete-file="${escape(file.id)}">Remover</button></div><form class="gcode-edit-form" data-edit-gcode="${escape(file.id)}"><label>Impressora / perfil<input name="printer_model" required list="printer-model-list" value="${escape(file.printer_model || '')}" placeholder="Ex.: Bambu Lab P1S"></label><label>Material<input name="material" required value="${escape(meta.material || '')}" placeholder="PETG"></label><label>Cor<input name="color" required value="${escape(meta.color || '')}" placeholder="Preto"></label><label>Bico (mm)<input name="nozzle" required type="number" min="0.1" max="2" step="0.1" value="${escape(meta.nozzle || '')}"></label><label>Peças por impressão<input name="quantity" required type="number" min="1" step="1" value="${escape(meta.quantity || 1)}"></label><label>Utilização<select name="active"><option value="true" ${file.active !== false ? 'selected' : ''}>Ativo</option><option value="false" ${file.active === false ? 'selected' : ''}>Inativo</option></select></label><button class="compact secondary" type="submit">Guardar dados</button></form></div></article>`;
+}
+function renderFiles() {
+  $('file-grid').innerHTML = libraryParts.length ? libraryParts.map((part) => `<article class="library-part-card"><header class="library-part-header"><div><p class="eyebrow">PEÇA · ${part.gcodes?.length || 0} G-CODE(S)</p><h2>${escape(part.name)}</h2><p>${escape(part.description || 'Sem descrição')}</p></div>${part.gcodes?.length ? '' : `<button class="compact danger" data-delete-library-part="${escape(part.id)}">Remover peça</button>`}</header><div class="library-gcode-list">${part.gcodes?.length ? part.gcodes.map(libraryGcodeEditor).join('') : '<p class="empty">Adiciona o primeiro G-code desta peça.</p>'}</div><form class="part-upload-form" data-upload-part="${escape(part.id)}"><label>Ficheiro G-code<input name="gcode" type="file" accept=".gcode,.gco" required></label><label>Impressora / perfil<input name="printer_model" required list="printer-model-list" placeholder="Ex.: Bambu Lab P1S"></label><label>Material<input name="material" required placeholder="PETG"></label><label>Cor<input name="color" required placeholder="Preto"></label><label>Bico (mm)<input name="nozzle" type="number" min="0.1" max="2" step="0.1" required value="0.4"></label><label>Peças por impressão<input name="quantity" type="number" min="1" step="1" required value="1"></label><button class="compact" type="submit">Adicionar G-code</button><small>O G-code fica associado a ${escape(part.name)} e disponível para encomendas e produção.</small></form></article>`).join('') : '<p class="empty">Ainda não existem peças. Cria a primeira peça e adiciona as variantes G-code.</p>';
+  if (!$('printer-model-list')) document.body.insertAdjacentHTML('beforeend', `<datalist id="printer-model-list">${[...new Set(latest.printers.map((printer) => String(printer.model || '').trim()).filter(Boolean))].sort().map((model) => `<option value="${escape(model)}"></option>`).join('')}</datalist>`);
+}
 
 function renderCustomers() {
   $('customer-grid').innerHTML = customers.length ? customers.map((customer) => { const fields = customer.template?.fields || []; const label = fields.length ? `${fields.length} área(s) configurada(s)` : 'Sem áreas OCR'; return `<article class="customer-card"><p class="eyebrow">${escape(label)}</p><h2>${escape(customer.name)}</h2><p>${escape(customer.template?.sample_name || 'Sem PDF tipo')}</p><small>${escape(customer.email || customer.phone || 'Sem contacto registado')}</small><button class="compact secondary" data-delete-customer="${customer.id}">Remover</button></article>`; }).join('') : '<p class="empty">Ainda não existem clientes. Adiciona um PDF tipo para configurar a leitura por áreas.</p>';
@@ -43,7 +55,7 @@ function resetTemplateForm() { templatePreview = null; templateFields = []; $('t
 
 async function populateFilaments() { try { const data = await api('/api/filaments'); $('filament-select').innerHTML = ['<option value="">Selecionar filamento</option>', ...data.map((f) => `<option value="${f.id}">${escape([f.vendor?.name, f.name || f.material, f.color_name || f.color_hex].filter(Boolean).join(' · '))}</option>`)].join(''); } catch { $('filament-select').innerHTML = '<option>Spoolman indisponível</option>'; } }
 async function refreshCustomers() { try { customers = await api('/api/customers'); renderCustomers(); } catch { $('customer-grid').innerHTML = '<p class="empty">Não foi possível carregar os clientes.</p>'; } }
-async function refreshFiles() { try { libraryFiles = await api('/api/files'); renderFiles(); if (latest.orders.length) { renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); } } catch { $('file-grid').innerHTML = '<p class="empty">Não foi possível carregar a biblioteca.</p>'; } }
+async function refreshFiles() { try { libraryParts = await api('/api/library-parts'); libraryFiles = libraryParts.flatMap((part) => part.gcodes || []); renderFiles(); if (latest.orders.length) { renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); } } catch { $('file-grid').innerHTML = '<p class="empty">Não foi possível carregar a biblioteca.</p>'; } }
 async function update() { $('refresh').disabled = true; try { const data = await api('/api/summary'); latest = { printers: data.printers.items, spools: data.spools.items, assignments: data.assignments || {}, orders: data.production.orders || [] }; $('printers-total').textContent = data.printers.total; $('printers-online').textContent = `${data.printers.online} online`; $('printers-printing').textContent = data.printers.printing; $('spools-total').textContent = data.spools.total; $('spools-low').textContent = data.spools.low ? `${data.spools.low} abaixo de 200 g` : 'Sem alertas'; $('live-dot').className = data.services.printFarmManager && data.services.spoolman ? 'connected' : 'warning'; $('last-update').textContent = `Atualizado às ${new Date(data.generatedAt).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })}`; $('system-host').textContent = data.system.hostname; $('system-up').textContent = `${Math.floor(data.system.uptime_seconds / 3600)} h ativo`; $('system-memory').textContent = `${data.system.memory_used_mb} MB`; $('system-load').textContent = data.system.cpu_load_1m; renderPrinters(latest.printers); renderSpools(); renderProduction(data.production.projects, data.production.jobs); renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); } catch { $('last-update').textContent = 'Não foi possível contactar os serviços'; $('live-dot').className = 'warning'; } finally { $('refresh').disabled = false; } }
 
 $('refresh').onclick = update;
@@ -72,6 +84,7 @@ document.addEventListener('click', async (event) => {
   const discovered = event.target.closest('[data-add-discovered]'); if (discovered) { try { const printer = JSON.parse(discovered.dataset.addDiscovered); const form = $('printer-form'); form.querySelector('[name="name"]').value = `${printer.detected_as} ${printer.ip}`; form.querySelector('[name="ip"]').value = printer.ip; form.querySelector('[name="type"]').value = printer.type; form.querySelector('[name="group_name"]').value = printer.detected_as; form.classList.remove('hidden'); form.querySelector('[name="model"]').focus(); toast('Dados preenchidos. Indica o modelo registado e confirma.'); } catch { toast('Não foi possível preparar esta impressora.', 'error'); } }
   const deleteCustomer = event.target.closest('[data-delete-customer]'); if (deleteCustomer && confirm('Remover este cliente e o respetivo modelo?')) try { await api(`/api/customers/${deleteCustomer.dataset.deleteCustomer}`, { method: 'DELETE' }); toast('Cliente removido.'); refreshCustomers(); } catch (error) { toast(error.message, 'error'); }
   const deleteFile = event.target.closest('[data-delete-file]'); if (deleteFile && confirm('Remover este G-code da biblioteca?')) try { await api(`/api/files/${deleteFile.dataset.deleteFile}`, { method: 'DELETE' }); toast('G-code removido.'); refreshFiles(); } catch (error) { toast(error.message, 'error'); }
+  const deletePart = event.target.closest('[data-delete-library-part]'); if (deletePart && confirm('Remover esta peça vazia da biblioteca?')) try { await api(`/api/library-parts/${deletePart.dataset.deleteLibraryPart}`, { method: 'DELETE' }); toast('Peça removida.'); refreshFiles(); } catch (error) { toast(error.message, 'error'); }
   const deleteOrder = event.target.closest('[data-delete-order]'); if (deleteOrder && confirm('Remover esta encomenda? Os G-codes anexados a ela também serão eliminados.')) try { await api(`/api/orders/${deleteOrder.dataset.deleteOrder}`, { method: 'DELETE' }); toast('Encomenda removida.'); update(); } catch (error) { toast(error.message, 'error'); }
   const save = event.target.closest('[data-save-assignment]'); if (save) { const id = save.dataset.saveAssignment, selected = document.querySelector(`[data-printer="${id}"]`).value; try { if (selected) await api('/api/assignments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: id, spool_id: selected }) }); else await fetch(`/api/assignments/${id}`, { method: 'DELETE' }); toast('Bobine atualizada.'); update(); } catch (error) { toast(error.message, 'error'); } }
   const use = event.target.closest('[data-consume]'); if (use) { const grams = prompt('Gramas consumidos:', '0'); if (Number(grams) > 0) try { await api('/api/consume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: use.dataset.consume, spool_id: use.dataset.spool, grams: Number(grams) }) }); toast('Consumo registado.'); update(); } catch (error) { toast(error.message, 'error'); } }
@@ -79,7 +92,7 @@ document.addEventListener('click', async (event) => {
 });
 document.addEventListener('change', async (event) => {
   if (event.target.matches('[data-order-library-file]')) try { await api(`/api/orders/${event.target.dataset.orderLibraryFile}/library-file`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file_id: event.target.value }) }); toast(event.target.value ? 'G-code associado à encomenda.' : 'G-code removido da encomenda.'); update(); } catch (error) { toast(error.message, 'error'); }
-  if (event.target.matches('[data-order-printer]')) try { await api(`/api/orders/${event.target.dataset.orderPrinter}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: event.target.value || null, status: event.target.value ? 'queued' : 'received' }) }); toast('Impressora atribuída.'); update(); } catch (error) { toast(error.message, 'error'); }
+  if (event.target.matches('[data-order-printer]')) try { const printer = latest.printers.find((item) => String(item.id) === String(event.target.value)); await api(`/api/orders/${event.target.dataset.orderPrinter}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: event.target.value || null, printer_model: printer?.model || null, status: event.target.value ? 'queued' : 'received' }) }); toast('Impressora atribuída.'); update(); } catch (error) { toast(error.message, 'error'); }
   if (event.target.matches('[data-file-order]') && event.target.files[0]) { const form = new FormData(); form.append('gcode', event.target.files[0]); const q = prompt('Quantidade de peças:', ''); const material = prompt('Material:', ''); const color = prompt('Cor:', ''); const nozzle = prompt('Bico em mm, ex.: 0.4:', ''); if (q) form.append('quantity', q); if (material) form.append('material', material); if (color) form.append('color', color); if (nozzle) form.append('nozzle', nozzle); try { const result = await api(`/api/orders/${event.target.dataset.fileOrder}/files`, { method: 'POST', body: form }); toast(result.metadata.valid ? 'G-code validado.' : `G-code guardado; falta: ${result.metadata.missing.join(', ')}.`, result.metadata.valid ? 'success' : 'error'); update(); } catch (error) { toast(error.message, 'error'); } }
   if (event.target.name === 'sample_pdf' && event.target.files[0]) { const form = new FormData(); form.append('pdf', event.target.files[0]); try { templatePreview = await api('/api/customers/template-preview', { method: 'POST', body: form }); templateFields = []; $('template-preview').src = templatePreview.image; $('template-workspace').classList.remove('hidden'); renderTemplateFields(); toast('PDF tipo preparado. Agora marca as áreas de leitura.'); } catch (error) { toast(error.message, 'error'); } }
 });
@@ -92,25 +105,53 @@ document.addEventListener('change', async (event) => {
   if (name === 'pointerup' && templateDrag) { const field = { field: $('template-field').value, left: Math.min(templateDrag.x, x), top: Math.min(templateDrag.y, y), width: Math.abs(x - templateDrag.x), height: Math.abs(y - templateDrag.y) }; templateDrag = null; if (field.width < 1 || field.height < 1) return toast('A área marcada é demasiado pequena.', 'error'); templateFields.push(field); renderTemplateFields(); }
 }));
 
-for (const id of ['order-form', 'project-form', 'printer-form', 'spool-form', 'customer-form', 'file-form']) $(id).addEventListener('submit', async (event) => {
+for (const id of ['order-form', 'project-form', 'printer-form', 'spool-form', 'customer-form', 'library-part-form']) $(id).addEventListener('submit', async (event) => {
   const formElement = event.currentTarget;
-  event.preventDefault(); const values = new FormData(formElement); const form = Object.fromEntries(values.entries()); const endpoint = id === 'order-form' ? '/api/orders' : id === 'project-form' ? '/api/projects' : id === 'printer-form' ? '/api/printers' : id === 'spool-form' ? '/api/spools' : id === 'customer-form' ? '/api/customers' : '/api/files';
+  event.preventDefault(); const values = new FormData(formElement); const form = Object.fromEntries(values.entries()); const endpoint = id === 'order-form' ? '/api/orders' : id === 'project-form' ? '/api/projects' : id === 'printer-form' ? '/api/printers' : id === 'spool-form' ? '/api/spools' : id === 'customer-form' ? '/api/customers' : '/api/library-parts';
   try {
     if (id === 'customer-form') { if (!templatePreview) throw new Error('Seleciona uma encomenda PDF tipo.'); if (!templateFields.length) throw new Error('Marca pelo menos uma área de leitura no PDF.'); form.template = { sample_name: templatePreview.file_name, fields: templateFields }; delete form.sample_pdf; }
     if (id === 'order-form') { const pdf = values.get('order_pdf'); delete form.order_pdf; if (pdf instanceof File && pdf.size) { const upload = new FormData(); upload.append('pdf', pdf); if (form.customer_id) upload.append('customer_id', form.customer_id); const draft = await api('/api/orders/import-pdf', { method: 'POST', body: upload }); form.title = form.title || (draft.order_number ? `Encomenda ${draft.order_number}` : pdf.name.replace(/\.pdf$/i, '')); form.customer = form.customer || draft.customer || ''; form.customer_id = draft.customer_id || form.customer_id || ''; form.items = draft.items || []; form.document = { file_name: draft.file_name, order_number: draft.order_number || null, ocr_used: Boolean(draft.ocr_used), template_used: Boolean(draft.template_used), imported_at: new Date().toISOString() }; if (draft.warnings?.length) form.notes = [form.notes, `PDF: ${draft.warnings.join(' ')}`].filter(Boolean).join('\n'); toast(draft.template_used ? 'PDF lido com o modelo do cliente.' : draft.ocr_used ? 'PDF lido por OCR.' : 'Texto do PDF lido automaticamente.'); } if (!String(form.title || '').trim()) throw new Error('Indica um nome ou seleciona um PDF com referência.'); }
-    if (id === 'file-form') { await api(endpoint, { method: 'POST', body: values }); } else { await api(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) }); }
-    formElement.reset(); formElement.classList.add('hidden'); if (id === 'customer-form') { resetTemplateForm(); await refreshCustomers(); } if (id === 'file-form') await refreshFiles(); toast(id === 'customer-form' ? 'Cliente e modelo guardados.' : id === 'file-form' ? 'G-code guardado na biblioteca.' : 'Registo criado.'); update();
+    await api(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
+    formElement.reset(); formElement.classList.add('hidden'); if (id === 'customer-form') { resetTemplateForm(); await refreshCustomers(); } if (id === 'library-part-form') await refreshFiles(); toast(id === 'customer-form' ? 'Cliente e modelo guardados.' : id === 'library-part-form' ? 'Peça criada. Agora adiciona os G-codes.' : 'Registo criado.'); update();
+  } catch (error) { toast(error.message, 'error'); }
+});
+document.addEventListener('submit', async (event) => {
+  const form = event.target;
+  if (!form.matches('.part-upload-form, .gcode-edit-form')) return;
+  event.preventDefault();
+  try {
+    if (form.matches('.part-upload-form')) {
+      const values = new FormData(form); values.append('part_id', form.dataset.uploadPart);
+      await api('/api/files', { method: 'POST', body: values });
+      toast('G-code associado à peça.');
+    } else {
+      const values = Object.fromEntries(new FormData(form).entries());
+      await api(`/api/files/${form.dataset.editGcode}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+      toast('Dados técnicos atualizados.');
+    }
+    await refreshFiles();
   } catch (error) { toast(error.message, 'error'); }
 });
 
-function orderGcodeLinks(order) {
-  const links = Array.isArray(order.library_files) ? order.library_files : (order.library_file_id ? [{ file_id: order.library_file_id, requested_quantity: null }] : []);
-  return links.map((link) => {
-    const file = libraryFiles.find((entry) => entry.id === link.file_id);
-    if (!file) return { ...link, missing: true };
-    const piecesPerRun = Math.max(1, Number(file.metadata?.quantity || 1));
-    const requested = Math.max(1, Number(link.requested_quantity || piecesPerRun));
-    return { ...link, file, requested, piecesPerRun, runs: Math.ceil(requested / piecesPerRun) };
+function bestGcodeForQuantity(files, quantity, printerModel = '') {
+  const active = [...files].filter((file) => file.active !== false);
+  const matching = printerModel ? active.filter((file) => file.printer_model === printerModel) : [];
+  return (matching.length ? matching : active).sort((left, right) => {
+    const leftYield = Math.max(1, Number(left.metadata?.quantity || 1)); const rightYield = Math.max(1, Number(right.metadata?.quantity || 1));
+    const leftRuns = Math.ceil(quantity / leftYield); const rightRuns = Math.ceil(quantity / rightYield);
+    return (leftRuns * leftYield - quantity) - (rightRuns * rightYield - quantity) || leftRuns - rightRuns;
+  })[0];
+}
+function orderPartLinks(order) {
+  return (Array.isArray(order.library_parts) ? order.library_parts : []).map((link) => {
+    const part = libraryParts.find((entry) => entry.id === link.part_id);
+    if (!part) return { ...link, missing: true };
+    const requested = Math.max(1, Number(link.requested_quantity || 1));
+    const variants = (part.gcodes || []).filter((file) => file.active !== false);
+    const file = variants.find((entry) => entry.id === link.selected_file_id) || bestGcodeForQuantity(variants, requested, order.printer_model);
+    if (!file) return { ...link, part, requested, missingGcode: true };
+    const piecesPerRun = Math.max(1, Number(file.metadata?.quantity || 1)); const runs = Math.ceil(requested / piecesPerRun);
+    return { ...link, part, file, variants, requested, piecesPerRun, runs, produced: runs * piecesPerRun, excess: runs * piecesPerRun - requested };
   });
 }
 renderOrders = function renderOrdersWithPieces() {
@@ -129,8 +170,8 @@ function renderHistory() {
   const completed = latest.orders.filter((order) => order.status === 'completed');
   const board = $('history-board'); if (!board) return;
   board.innerHTML = completed.length ? completed.map((order) => {
-    const pieces = orderGcodeLinks(order);
-    const summary = pieces.length ? pieces.map((piece) => piece.missing ? 'G-code removido' : `${escape(piece.file.original_name)} · ${piece.requested} peça(s)`).join('<br>') : 'Sem G-code associado';
+    const pieces = orderPartLinks(order);
+    const summary = pieces.length ? pieces.map((piece) => piece.missing ? 'Peça removida' : piece.missingGcode ? `${escape(piece.part.name)} · sem G-code ativo` : `${escape(piece.part.name)} · ${piece.requested} peça(s) · ${escape(piece.file.original_name)}`).join('<br>') : 'Sem peça associada';
     const finished = order.updated_at ? new Date(order.updated_at).toLocaleString('pt-PT', { dateStyle: 'short', timeStyle: 'short' }) : '—';
     return `<article class="history-card"><div><p class="eyebrow">${escape(order.id)}</p><h2>${escape(order.title)}</h2><p>${escape(order.customer || 'Sem cliente')}</p></div><div><strong>Concluída</strong><small>${escape(finished)}</small></div><div class="history-pieces">${summary}</div></article>`;
   }).join('') : '<p class="empty">Ainda não existem encomendas concluídas.</p>';
@@ -138,29 +179,38 @@ function renderHistory() {
 renderOrderLibrarySelectors = function renderOrderPieces() {
   document.querySelectorAll('#order-board .order-card').forEach((card, index) => {
     const order = latest.orders.filter((item) => item.status !== 'completed')[index]; const actions = card.querySelector('.order-actions'); if (!order || !actions) return;
-    const links = orderGcodeLinks(order);
+    const links = orderPartLinks(order);
     const rows = links.length ? links.map((link) => link.missing
-      ? `<div class="order-file-row broken"><span>G-code removido da biblioteca</span><button class="compact danger" data-remove-order-file="${escape(order.id)}" data-library-file-id="${escape(link.file_id)}">Retirar</button></div>`
-      : `<div class="order-file-row"><div><strong>${escape(link.file.original_name)}</strong><small>${escape(link.file.metadata?.material || '—')} ${escape(link.file.metadata?.color || '')} · ${link.piecesPerRun} peça(s)/execução</small></div><span>${link.requested} pedidas<br><small>${link.runs} execução(ões)</small></span><button class="compact danger" data-remove-order-file="${escape(order.id)}" data-library-file-id="${escape(link.file.id)}">Retirar</button></div>`
+      ? `<div class="order-file-row broken"><span>Peça removida da biblioteca</span><button class="compact danger" data-remove-order-part="${escape(order.id)}" data-library-part-id="${escape(link.part_id)}">Retirar</button></div>`
+      : link.missingGcode ? `<div class="order-file-row broken"><span>${escape(link.part.name)} · sem G-code ativo</span><button class="compact danger" data-remove-order-part="${escape(order.id)}" data-library-part-id="${escape(link.part.id)}">Retirar</button></div>`
+      : `<div class="order-file-row order-part-row"><div><strong>${escape(link.part.name)}</strong><small>${link.requested} pedidas · ${link.runs} impressão(ões) · ${link.produced} produzidas${link.excess ? ` · excedente ${link.excess}` : ''}</small></div><label>G-code de produção<select data-order-part-gcode="${escape(order.id)}" data-library-part-id="${escape(link.part.id)}"><option value="">Automático · menor excedente</option>${link.variants.map((file) => `<option value="${escape(file.id)}" ${file.id === link.selected_file_id ? 'selected' : ''}>${escape(file.original_name)} · ${escape(file.printer_model || 'sem perfil')} · ${escape(file.metadata?.material || '—')} ${escape(file.metadata?.color || '')} · ${escape(file.metadata?.nozzle || '—')} mm · ${escape(file.metadata?.quantity || 1)} un.</option>`).join('')}</select></label><button class="compact danger" data-remove-order-part="${escape(order.id)}" data-library-part-id="${escape(link.part.id)}">Retirar</button></div>`
     ).join('') : '<p class="empty">Ainda não foram associadas peças a esta encomenda.</p>';
-    const selectedIds = new Set(links.map((link) => link.file_id));
-    const options = ['<option value="">Selecionar G-code</option>', ...libraryFiles.filter((file) => !selectedIds.has(file.id)).map((file) => `<option value="${file.id}">${escape(file.original_name)} · ${escape(file.metadata?.material || '—')} ${escape(file.metadata?.color || '')}</option>`)].join('');
-    actions.insertAdjacentHTML('beforeend', `<div class="order-file-links"><strong>Peças e G-codes</strong><div class="order-file-list">${rows}</div><div class="order-file-add"><label>G-code<select data-order-add-file="${escape(order.id)}">${options}</select></label><label>Quantidade pedida<input type="number" min="1" step="1" value="1" data-order-file-quantity="${escape(order.id)}"></label><button class="compact" data-add-order-file="${escape(order.id)}">Adicionar peça</button></div></div>`);
-    const summary = card.querySelector('.order-gcode-summary'); if (summary) summary.textContent = links.length ? `${links.length} G-code(s) associado(s) · ${links.reduce((sum, link) => sum + (link.requested || 0), 0)} peça(s) pedida(s).` : 'Sem peças/G-codes associados.';
+    const selectedIds = new Set(links.map((link) => link.part_id));
+    const options = ['<option value="">Selecionar peça</option>', ...libraryParts.filter((part) => !selectedIds.has(part.id) && part.gcodes?.some((file) => file.active !== false)).map((part) => `<option value="${part.id}">${escape(part.name)} · ${part.gcodes.filter((file) => file.active !== false).length} variante(s)</option>`)].join('');
+    actions.insertAdjacentHTML('beforeend', `<div class="order-file-links"><strong>Peças pedidas e G-code de produção</strong><div class="order-file-list">${rows}</div><div class="order-file-add"><label>Peça<select data-order-add-part="${escape(order.id)}">${options}</select></label><label>Quantidade pedida<input type="number" min="1" step="1" value="1" data-order-part-quantity="${escape(order.id)}"></label><button class="compact" data-add-order-part="${escape(order.id)}">Adicionar peça</button></div></div>`);
+    const summary = card.querySelector('.order-gcode-summary'); if (summary) summary.textContent = links.length ? `${links.length} peça(s) · ${links.reduce((sum, link) => sum + (link.requested || 0), 0)} unidade(s) pedida(s).` : 'Sem peças associadas.';
   });
 };
 document.addEventListener('click', async (event) => {
-  const add = event.target.closest('[data-add-order-file]');
+  const add = event.target.closest('[data-add-order-part]');
   if (add) {
-    const id = add.dataset.addOrderFile;
-    const fileId = document.querySelector(`[data-order-add-file="${id}"]`)?.value;
-    const quantity = document.querySelector(`[data-order-file-quantity="${id}"]`)?.value;
-    try { await api(`/api/orders/${id}/library-files`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file_id: fileId, requested_quantity: quantity }) }); toast('Peça associada à encomenda.'); update(); } catch (error) { toast(error.message, 'error'); }
+    const id = add.dataset.addOrderPart;
+    const partId = document.querySelector(`[data-order-add-part="${id}"]`)?.value;
+    const quantity = document.querySelector(`[data-order-part-quantity="${id}"]`)?.value;
+    try { await api(`/api/orders/${id}/library-parts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ part_id: partId, requested_quantity: quantity }) }); toast('Peça associada à encomenda.'); update(); } catch (error) { toast(error.message, 'error'); }
   }
-  const remove = event.target.closest('[data-remove-order-file]');
-  if (remove && confirm('Retirar este G-code desta encomenda? O ficheiro mantém-se na biblioteca.')) {
-    try { await api(`/api/orders/${remove.dataset.removeOrderFile}/library-files/${remove.dataset.libraryFileId}`, { method: 'DELETE' }); toast('G-code retirado da encomenda.'); update(); } catch (error) { toast(error.message, 'error'); }
+  const remove = event.target.closest('[data-remove-order-part]');
+  if (remove && confirm('Retirar esta peça da encomenda? A biblioteca não será alterada.')) {
+    try { await api(`/api/orders/${remove.dataset.removeOrderPart}/library-parts/${remove.dataset.libraryPartId}`, { method: 'DELETE' }); toast('Peça retirada da encomenda.'); update(); } catch (error) { toast(error.message, 'error'); }
   }
+});
+document.addEventListener('change', async (event) => {
+  const selector = event.target.closest('[data-order-part-gcode]');
+  if (!selector) return;
+  try {
+    await api(`/api/orders/${selector.dataset.orderPartGcode}/library-parts/${selector.dataset.libraryPartId}/gcode`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file_id: selector.value }) });
+    toast(selector.value ? 'G-code de produção selecionado.' : 'Seleção automática ativada.'); await update();
+  } catch (error) { toast(error.message, 'error'); }
 });
 let selectedFarmProjectId = null;
 let selectedFarmProject = null;
@@ -197,6 +247,9 @@ function farmModelOptions(selected = '', excluded = []) {
 }
 function libraryFileOptions() {
   return ['<option value="">Selecionar G-code da biblioteca</option>', ...libraryFiles.map((file) => `<option value="${escape(file.id)}">${escape(file.original_name)} · ${escape(file.metadata?.quantity || '—')} peças · ${escape(file.metadata?.material || '—')} ${escape(file.metadata?.color || '')}</option>`)].join('');
+}
+function libraryPartOptions() {
+  return ['<option value="">Selecionar peça da biblioteca</option>', ...libraryParts.filter((part) => part.gcodes?.some((file) => file.active !== false)).map((part) => `<option value="${escape(part.id)}">${escape(part.name)} · ${part.gcodes.filter((file) => file.active !== false).length} G-code(s)</option>`)].join('');
 }
 function setupProjectWorkspace() {
   const projectPanel = $('project-list')?.closest('.table-panel');
@@ -250,7 +303,7 @@ function filenameAsPartName(file) {
   return String(file?.original_name || '').replace(/\.(gcode|gco)$/i, '').replace(/[_-]+/g, ' ').trim();
 }
 function projectPartFormMarkup() {
-  return `<form id="project-part-form" class="project-part-form"><label>G-code da Biblioteca<select name="file_id" required>${libraryFileOptions()}</select></label><label>Nome da peça<input name="name" maxlength="120" placeholder="Preenchido a partir do ficheiro"></label><label>Quantidade a produzir<input name="target_qty" type="number" min="1" step="1" required value="1"></label><label>Modelo de impressora<select name="printer_model" required>${farmModelOptions()}</select></label><label>Peças por execução<input name="parts_per_plate" type="number" min="1" step="1" required value="1"></label><button class="compact" type="submit">Criar peça e adicionar G-code</button><small>Escolhe o primeiro G-code da peça. Depois podes adicionar outras variantes para máquinas diferentes.</small></form>`;
+  return `<form id="project-part-form" class="project-part-form library-production-form"><label>Peça da biblioteca<select name="library_part_id" required>${libraryPartOptions()}</select></label><label>Quantidade a produzir<input name="target_qty" type="number" min="1" step="1" required value="1"></label><button class="compact" type="submit">Adicionar peça à produção</button><small>Todos os G-codes ativos da peça são copiados para a farm. O sistema poderá usar qualquer variante compatível.</small></form>`;
 }
 const renderProjectWorkspaceBase = renderProjectWorkspace;
 renderProjectWorkspace = function renderProjectWorkspaceFromLibrary() {
@@ -259,18 +312,6 @@ renderProjectWorkspace = function renderProjectWorkspaceFromLibrary() {
   const oldForm = workspace?.querySelector('#project-part-form');
   if (oldForm) oldForm.outerHTML = projectPartFormMarkup();
 };
-document.addEventListener('change', (event) => {
-  const selector = event.target.closest('#project-part-form [name="file_id"]');
-  if (!selector) return;
-  const file = libraryFiles.find((item) => item.id === selector.value);
-  const form = selector.closest('#project-part-form');
-  if (!file || !form) return;
-  const name = form.querySelector('[name="name"]'); const automaticName = filenameAsPartName(file);
-  if (!name) return;
-  if (!name.value || name.dataset.automaticName === name.value) { name.value = automaticName; name.dataset.automaticName = automaticName; }
-  const pieces = form.querySelector('[name="parts_per_plate"]');
-  if (pieces && file.metadata?.quantity) pieces.value = file.metadata.quantity;
-});
 renderProduction = function renderProductionWithFarmProjects(projects, jobs) {
   $('jobs-count').textContent = `${jobs.length} total`;
   $('projects-count').textContent = `${projects.length} total`;
