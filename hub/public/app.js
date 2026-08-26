@@ -190,8 +190,9 @@ function formatDuration(seconds) {
   const hours = Math.floor(total / 3600); const minutes = Math.round((total % 3600) / 60);
   return hours ? `${hours} h ${minutes} m` : `${minutes} min`;
 }
-function farmModelOptions(selected = '') {
-  const models = [...new Set(latest.printers.map((printer) => String(printer.model || '').trim()).filter(Boolean))].sort();
+function farmModelOptions(selected = '', excluded = []) {
+  const blocked = new Set(excluded.map((model) => String(model || '').trim()));
+  const models = [...new Set(latest.printers.map((printer) => String(printer.model || '').trim()).filter(Boolean))].filter((model) => !blocked.has(model)).sort();
   return ['<option value="">Selecionar modelo</option>', ...models.map((model) => `<option value="${escape(model)}" ${model === selected ? 'selected' : ''}>${escape(model)}</option>`)].join('');
 }
 function libraryFileOptions() {
@@ -242,9 +243,34 @@ function renderProjectWorkspace() {
   workspace.innerHTML = `<article class="project-console"><div class="project-console-header"><div><button class="text-button" data-close-project>← Projetos</button><p class="eyebrow">PROJETO #${escape(project.id)}</p><h2>${escape(project.name)}</h2><p>${escape(project.description || 'Sem descrição')}</p></div><div class="project-status"><span class="badge ${statusClass(project.status)}">${projectStatusLabel(project.status)}</span><strong>${done} / ${target} peças</strong><small>${active} em produção · ${percent}% concluído</small></div></div><div class="project-progress"><span style="width:${percent}%"></span></div><div class="project-action-bar">${projectActions(project)}</div><form id="project-edit-form" class="project-edit-form"><label>Nome do projeto<input name="name" required maxlength="120" value="${escape(project.name || '')}"></label><label>Descrição<input name="description" maxlength="500" value="${escape(project.description || '')}" placeholder="Notas de produção, cliente ou prazo"></label><button class="compact secondary" type="submit">Guardar alterações</button></form><form id="project-filament-form" class="project-defaults-form"><input type="hidden" name="project_id" value="${escape(project.id)}"><label>Material padrão<input name="required_material" value="${escape(project.required_material || '')}" placeholder="Ex.: PETG"></label><label>Cor padrão<input name="required_color" value="${escape(project.required_color || '')}" placeholder="Ex.: Preto"></label><button class="compact secondary" type="submit">Guardar requisitos</button><small>Estes valores são usados por defeito no despacho automático.</small></form></article><article class="project-parts-panel"><div class="panel-heading"><div><p class="eyebrow">PLANO DE PRODUÇÃO</p><h2>Peças do projeto</h2></div><span>${parts.length} peça(s)</span></div><form id="project-part-form" class="project-part-form"><label>Nova peça<input name="name" required maxlength="120" placeholder="Ex.: Suporte lateral"></label><label>Quantidade a produzir<input name="target_qty" type="number" min="1" step="1" required value="1"></label><button class="compact" type="submit">Adicionar peça</button></form><div class="project-parts-list">${parts.length ? parts.map((part) => {
     const remaining = Math.max(0, Number(part.target_qty || 0) - Number(part.completed_qty || 0));
     const dispatch = part.dispatch || {}; const notes = [...(dispatch.reasons || []), ...(dispatch.notes || [])];
-    return `<article class="project-part-card"><div class="part-heading"><div><p class="eyebrow">PEÇA #${escape(part.id)}</p><h3>${escape(part.name)}</h3><p>${part.completed_qty} concluídas · ${part.active_qty || 0} em produção · faltam ${remaining}</p></div><div><span class="badge ${part.status === 'open' ? 'printing' : 'online'}">${part.status === 'open' ? 'Aberta' : 'Fechada'}</span><button class="compact danger" data-delete-part="${part.id}" data-part-name="${escape(part.name)}">Apagar</button></div></div><div class="part-meter"><span style="width:${Math.min(100, (Number(part.completed_qty || 0) / Math.max(1, Number(part.target_qty || 1))) * 100)}%"></span></div><form class="part-edit-form" data-edit-part="${part.id}"><label>Meta<input name="target_qty" type="number" min="1" step="1" value="${escape(part.target_qty)}"></label><label>Peças boas concluídas<input name="completed_qty" type="number" min="0" step="1" value="${escape(part.completed_qty)}"></label><button class="compact secondary" type="submit">Atualizar quantidades</button></form><div class="dispatch-state ${dispatch.dispatchable ? 'ready' : 'blocked'}"><strong>${dispatch.dispatchable ? 'Pronta para despacho automático' : 'A aguardar condições para despacho'}</strong>${notes.length ? `<ul>${notes.map((note) => `<li>${escape(note)}</li>`).join('')}</ul>` : '<small>Existe pelo menos uma impressora compatível e livre.</small>'}</div><section class="part-gcodes"><div class="part-subheading"><h4>G-codes na farm</h4><span>um por modelo de impressora</span></div>${partGcodeRows(part)}<form class="part-gcode-form" data-part-gcode="${part.id}"><label>G-code da biblioteca<select name="file_id" required>${libraryFileOptions()}</select></label><label>Modelo de impressora<select name="printer_model" required>${farmModelOptions()}</select></label><label>Peças por execução<input name="parts_per_plate" type="number" min="1" step="1" value="1" required></label><button class="compact" type="submit">Enviar para a farm</button><small>O ficheiro permanece na Biblioteca e é copiado para a fila do projeto.</small></form></section></article>`;
+    return `<article class="project-part-card"><div class="part-heading"><div><p class="eyebrow">PEÇA #${escape(part.id)}</p><h3>${escape(part.name)}</h3><p>${part.completed_qty} concluídas · ${part.active_qty || 0} em produção · faltam ${remaining}</p></div><div><span class="badge ${part.status === 'open' ? 'printing' : 'online'}">${part.status === 'open' ? 'Aberta' : 'Fechada'}</span><button class="compact danger" data-delete-part="${part.id}" data-part-name="${escape(part.name)}">Apagar</button></div></div><div class="part-meter"><span style="width:${Math.min(100, (Number(part.completed_qty || 0) / Math.max(1, Number(part.target_qty || 1))) * 100)}%"></span></div><form class="part-edit-form" data-edit-part="${part.id}"><label>Meta<input name="target_qty" type="number" min="1" step="1" value="${escape(part.target_qty)}"></label><label>Peças boas concluídas<input name="completed_qty" type="number" min="0" step="1" value="${escape(part.completed_qty)}"></label><button class="compact secondary" type="submit">Atualizar quantidades</button></form><div class="dispatch-state ${dispatch.dispatchable ? 'ready' : 'blocked'}"><strong>${dispatch.dispatchable ? 'Pronta para despacho automático' : 'A aguardar condições para despacho'}</strong>${notes.length ? `<ul>${notes.map((note) => `<li>${escape(note)}</li>`).join('')}</ul>` : '<small>Existe pelo menos uma impressora compatível e livre.</small>'}</div><section class="part-gcodes"><div class="part-subheading"><h4>G-codes na farm</h4><span>um por modelo de impressora</span></div>${partGcodeRows(part)}<form class="part-gcode-form" data-part-gcode="${part.id}"><label>G-code da biblioteca<select name="file_id" required>${libraryFileOptions()}</select></label><label>Modelo de impressora<select name="printer_model" required>${farmModelOptions('', (part.gcodes || []).map((gcode) => gcode.printer_model))}</select></label><label>Peças por execução<input name="parts_per_plate" type="number" min="1" step="1" value="1" required></label><button class="compact" type="submit">Adicionar variante</button><small>Seleciona um modelo ainda sem G-code; o ficheiro original mantém-se na Biblioteca.</small></form></section></article>`;
   }).join('') : '<p class="empty">Adiciona a primeira peça e define a quantidade a produzir.</p>'}</div></article>`;
 }
+function filenameAsPartName(file) {
+  return String(file?.original_name || '').replace(/\.(gcode|gco)$/i, '').replace(/[_-]+/g, ' ').trim();
+}
+function projectPartFormMarkup() {
+  return `<form id="project-part-form" class="project-part-form"><label>G-code da Biblioteca<select name="file_id" required>${libraryFileOptions()}</select></label><label>Nome da peça<input name="name" maxlength="120" placeholder="Preenchido a partir do ficheiro"></label><label>Quantidade a produzir<input name="target_qty" type="number" min="1" step="1" required value="1"></label><label>Modelo de impressora<select name="printer_model" required>${farmModelOptions()}</select></label><label>Peças por execução<input name="parts_per_plate" type="number" min="1" step="1" required value="1"></label><button class="compact" type="submit">Criar peça e adicionar G-code</button><small>Escolhe o primeiro G-code da peça. Depois podes adicionar outras variantes para máquinas diferentes.</small></form>`;
+}
+const renderProjectWorkspaceBase = renderProjectWorkspace;
+renderProjectWorkspace = function renderProjectWorkspaceFromLibrary() {
+  renderProjectWorkspaceBase();
+  const workspace = $('project-workspace');
+  const oldForm = workspace?.querySelector('#project-part-form');
+  if (oldForm) oldForm.outerHTML = projectPartFormMarkup();
+};
+document.addEventListener('change', (event) => {
+  const selector = event.target.closest('#project-part-form [name="file_id"]');
+  if (!selector) return;
+  const file = libraryFiles.find((item) => item.id === selector.value);
+  const form = selector.closest('#project-part-form');
+  if (!file || !form) return;
+  const name = form.querySelector('[name="name"]'); const automaticName = filenameAsPartName(file);
+  if (!name) return;
+  if (!name.value || name.dataset.automaticName === name.value) { name.value = automaticName; name.dataset.automaticName = automaticName; }
+  const pieces = form.querySelector('[name="parts_per_plate"]');
+  if (pieces && file.metadata?.quantity) pieces.value = file.metadata.quantity;
+});
 renderProduction = function renderProductionWithFarmProjects(projects, jobs) {
   $('jobs-count').textContent = `${jobs.length} total`;
   $('projects-count').textContent = `${projects.length} total`;
@@ -258,7 +284,7 @@ document.addEventListener('submit', async (event) => {
   if (!selectedFarmProject) return;
   const values = Object.fromEntries(new FormData(form).entries());
   try {
-    if (form.id === 'project-part-form') await api('/api/parts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...values, project_id: selectedFarmProject.project.id }) });
+    if (form.id === 'project-part-form') await api(`/api/projects/${selectedFarmProject.project.id}/library-part`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
     if (form.id === 'project-edit-form') await api(`/api/projects/${selectedFarmProject.project.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
     if (form.id === 'project-filament-form') await api(`/api/projects/${selectedFarmProject.project.id}/filament`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
     if (form.matches('.part-edit-form')) {
@@ -266,7 +292,7 @@ document.addEventListener('submit', async (event) => {
       await api(`/api/parts/${form.dataset.editPart}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
     }
     if (form.matches('.part-gcode-form')) await api(`/api/projects/${selectedFarmProject.project.id}/parts/${form.dataset.partGcode}/library-gcode`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
-    toast(form.matches('.part-gcode-form') ? 'G-code copiado para a fila da farm.' : 'Projeto atualizado.');
+    toast(form.matches('.part-gcode-form') ? 'Nova variante de G-code copiada para a farm.' : form.id === 'project-part-form' ? 'Peça criada a partir da Biblioteca.' : 'Projeto atualizado.');
     await refreshSelectedProject(); await update();
   } catch (error) { toast(error.message, 'error'); }
 });

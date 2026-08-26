@@ -868,6 +868,17 @@ body.project-editor-page .project-workspace {
 .project-row.selected { margin:0 -8px; padding-right:8px; padding-left:8px; border-radius:5px; background:#008bff13; }
 .project-row .compact:disabled { cursor:not-allowed; opacity:.35; }
 
+/* The first project part always starts from the central G-code library. */
+.project-part-form {
+  grid-template-columns:minmax(190px,2fr) minmax(150px,1.3fr) minmax(125px,.7fr) minmax(145px,1fr) minmax(120px,.7fr) auto;
+}
+
+.project-part-form small {
+  grid-column:1/-1;
+  color:#9da7ac;
+  font-size:.72rem;
+}
+
 @media (max-width:840px) {
   .project-console-header,.part-heading { flex-direction:column; }
   .project-status { text-align:left; }

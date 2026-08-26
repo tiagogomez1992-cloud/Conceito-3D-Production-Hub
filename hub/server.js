@@ -507,6 +507,56 @@ app.delete('/api/gcodes/:gcodeId', async (req, res) => {
   if (!result.ok) return res.status(result.status || 502).json({ error: result.error || 'Nao foi possivel apagar o G-code da farm.' });
   res.status(204).end();
 });
+
+function piecesPerExecution(rawValue, libraryFile) {
+  const candidate = rawValue === undefined || rawValue === '' ? libraryFile?.metadata?.quantity : rawValue;
+  const amount = Math.floor(Number(candidate));
+  return Number.isInteger(amount) && amount > 0 ? amount : null;
+}
+async function copyLibraryGcodeToFarm({ partId, libraryFile, printerModel, partsPerPlate, requiredMaterial, requiredColor }) {
+  const diskFile = path.join(uploadsDir, libraryFile.stored_name);
+  if (!fs.existsSync(diskFile)) return { ok: false, status: 410, error: 'O ficheiro fisico ja nao existe na biblioteca.' };
+  const form = new FormData();
+  form.append('file', fs.createReadStream(diskFile), { filename: libraryFile.original_name, contentType: 'application/octet-stream' });
+  form.append('part_id', String(partId));
+  form.append('parts_per_plate', String(partsPerPlate));
+  form.append('printer_model', printerModel);
+  if (libraryFile.metadata?.filament_grams) form.append('material_grams', String(libraryFile.metadata.filament_grams));
+  const material = clean(requiredMaterial || libraryFile.metadata?.material, 80);
+  const color = clean(requiredColor || libraryFile.metadata?.color, 80);
+  if (material) form.append('required_material', material);
+  if (color) form.append('required_color', color);
+  try {
+    const response = await client.post(`${farmUrl}/api/gcodes/upload`, form, { headers: form.getHeaders(), timeout: 30000, maxContentLength: Infinity, maxBodyLength: Infinity });
+    return { ok: true, data: response.data };
+  } catch (error) {
+    return { ok: false, status: error.response?.status || 502, error: error.response?.data?.error || 'Nao foi possivel enviar o G-code para a farm.' };
+  }
+}
+
+// Creates the production part from a G-code in the portal library. More G-code
+// variants can then be added to that same part for other printer models.
+app.post('/api/projects/:projectId/library-part', async (req, res) => {
+  const projectId = projectIdOrError(req, res); if (!projectId) return;
+  const saved = state();
+  const libraryFile = getLibraryFile(saved, clean(req.body?.file_id, 80));
+  const printerModel = clean(req.body?.printer_model, 100);
+  const targetQty = Math.floor(Number(req.body?.target_qty));
+  const partsPerPlate = piecesPerExecution(req.body?.parts_per_plate, libraryFile);
+  if (!libraryFile || !printerModel || !Number.isInteger(targetQty) || targetQty < 1 || !partsPerPlate) {
+    return res.status(400).json({ error: 'Seleciona um G-code da biblioteca, o modelo da impressora e uma quantidade valida.' });
+  }
+  const fallbackName = path.basename(libraryFile.original_name, path.extname(libraryFile.original_name));
+  const name = clean(req.body?.name || fallbackName, 120);
+  const partResult = await safeRequest('post', `${farmUrl}/api/parts`, { project_id: projectId, name, target_qty: targetQty });
+  if (!partResult.ok) return res.status(partResult.status || 502).json({ error: partResult.error || 'Nao foi possivel criar a peca na farm.' });
+  const gcodeResult = await copyLibraryGcodeToFarm({ partId: partResult.data.id, libraryFile, printerModel, partsPerPlate, requiredMaterial: req.body?.required_material, requiredColor: req.body?.required_color });
+  if (!gcodeResult.ok) {
+    await safeRequest('delete', `${farmUrl}/api/parts/${partResult.data.id}`);
+    return res.status(gcodeResult.status || 502).json({ error: gcodeResult.error });
+  }
+  res.status(201).json({ part: partResult.data, gcode: gcodeResult.data });
+});
 app.post('/api/projects/:projectId/parts/:partId/library-gcode', async (req, res) => {
   const projectId = projectIdOrError(req, res); if (!projectId) return;
   const partId = positiveProjectId(req.params.partId);
@@ -514,26 +564,13 @@ app.post('/api/projects/:projectId/parts/:partId/library-gcode', async (req, res
   const saved = state();
   const libraryFile = getLibraryFile(saved, clean(req.body?.file_id, 80));
   const printerModel = clean(req.body?.printer_model, 100);
-  const partsPerPlate = Math.max(1, Math.floor(Number(req.body?.parts_per_plate || libraryFile?.metadata?.quantity)));
-  if (!libraryFile || !printerModel || !Number.isFinite(partsPerPlate)) return res.status(400).json({ error: 'Seleciona um G-code, um modelo de impressora e a quantidade por execucao.' });
+  const partsPerPlate = piecesPerExecution(req.body?.parts_per_plate, libraryFile);
+  if (!libraryFile || !printerModel || !partsPerPlate) return res.status(400).json({ error: 'Seleciona um G-code, um modelo de impressora e a quantidade por execucao.' });
   const partResult = await safeGet(`${farmUrl}/api/parts/${partId}`);
   if (!partResult.ok || Number(partResult.data?.project_id) !== projectId) return res.status(404).json({ error: 'A peca nao pertence a este projeto.' });
-  const diskFile = path.join(uploadsDir, libraryFile.stored_name);
-  if (!fs.existsSync(diskFile)) return res.status(410).json({ error: 'O ficheiro fisico ja nao existe na biblioteca.' });
-  const form = new FormData();
-  form.append('file', fs.createReadStream(diskFile), { filename: libraryFile.original_name, contentType: 'application/octet-stream' });
-  form.append('part_id', String(partId));
-  form.append('parts_per_plate', String(partsPerPlate));
-  form.append('printer_model', printerModel);
-  if (libraryFile.metadata?.filament_grams) form.append('material_grams', String(libraryFile.metadata.filament_grams));
-  if (clean(req.body?.required_material || libraryFile.metadata?.material, 80)) form.append('required_material', clean(req.body?.required_material || libraryFile.metadata?.material, 80));
-  if (clean(req.body?.required_color || libraryFile.metadata?.color, 80)) form.append('required_color', clean(req.body?.required_color || libraryFile.metadata?.color, 80));
-  try {
-    const response = await client.post(`${farmUrl}/api/gcodes/upload`, form, { headers: form.getHeaders(), timeout: 30000, maxContentLength: Infinity, maxBodyLength: Infinity });
-    res.status(201).json(response.data);
-  } catch (error) {
-    res.status(error.response?.status || 502).json({ error: error.response?.data?.error || 'Nao foi possivel enviar o G-code para a farm.' });
-  }
+  const result = await copyLibraryGcodeToFarm({ partId, libraryFile, printerModel, partsPerPlate, requiredMaterial: req.body?.required_material, requiredColor: req.body?.required_color });
+  if (!result.ok) return res.status(result.status || 502).json({ error: result.error });
+  res.status(201).json(result.data);
 });
 app.post('/api/scheduler/dispatch', async (_req, res) => forwarded(res, await safeRequest('post', `${farmUrl}/api/scheduler/dispatch`, {}), 200));
 app.post('/api/spools', async (req, res) => { const { filament_id, remaining_weight } = req.body || {}; if (!filament_id) return res.status(400).json({ error: 'Seleciona um filamento antes de criar a bobine.' }); forwarded(res, await safeRequest('post', `${spoolmanUrl}/api/v1/spool`, { filament_id: Number(filament_id), used_weight: 0, ...(remaining_weight ? { initial_weight: Number(remaining_weight) } : {}) })); });
