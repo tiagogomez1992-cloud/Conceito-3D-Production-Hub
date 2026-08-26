@@ -695,6 +695,21 @@ header .brand::after {
 
 .project-workspace.hidden { display:none; }
 
+/* A project editor has its own address (/projetos/:id) and a focused workspace. */
+body.project-editor-page #production > .section-heading,
+body.project-editor-page #production > #project-form,
+body.project-editor-page #production > .table-panel {
+  display:none;
+}
+
+body.project-editor-page #production {
+  max-width:1320px;
+}
+
+body.project-editor-page .project-workspace {
+  margin-top:7px;
+}
+
 .project-console,
 .project-parts-panel {
   padding:22px;

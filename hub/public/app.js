@@ -165,6 +165,22 @@ document.addEventListener('click', async (event) => {
 let selectedFarmProjectId = null;
 let selectedFarmProject = null;
 
+function projectEditorIdFromPath() {
+  const match = window.location.pathname.match(/^\/projetos\/(\d+)\/?$/);
+  return match ? Number(match[1]) : null;
+}
+function isProjectEditorPage() { return Boolean(projectEditorIdFromPath()); }
+function showProjectEditorPage(projectId) {
+  selectedFarmProjectId = Number(projectId);
+  document.body.classList.add('project-editor-page');
+  const productionTab = document.querySelector('[data-view="production"]');
+  document.querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab === productionTab));
+  document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === 'production'));
+}
+function openProjectEditorPage(projectId) {
+  window.location.assign(`/projetos/${encodeURIComponent(projectId)}`);
+}
+
 function projectStatusLabel(status) {
   return ({ draft: 'Rascunho', active: 'Ativo', paused: 'Pausado', completed: 'Concluído' })[String(status || '').toLowerCase()] || value(status);
 }
@@ -195,6 +211,7 @@ async function refreshSelectedProject() {
   renderProjectWorkspace();
 }
 function closeProjectWorkspace() {
+  if (isProjectEditorPage()) { window.location.assign('/'); return; }
   selectedFarmProjectId = null; selectedFarmProject = null;
   const workspace = $('project-workspace'); if (workspace) { workspace.classList.add('hidden'); workspace.innerHTML = ''; }
 }
@@ -232,7 +249,7 @@ renderProduction = function renderProductionWithFarmProjects(projects, jobs) {
   $('jobs-count').textContent = `${jobs.length} total`;
   $('projects-count').textContent = `${projects.length} total`;
   $('job-list').innerHTML = jobs.length ? jobs.slice(0, 12).map((job) => `<div class="data-row"><div><strong>${value(job.part_name || job.name, `Trabalho #${job.id}`)}</strong><small>${value(job.printer_name, 'Impressora não atribuída')}</small></div><span class="badge ${statusClass(job.status)}">${value(job.status)}</span></div>`).join('') : '<p class="empty">Ainda não existem trabalhos.</p>';
-  $('project-list').innerHTML = projects.length ? projects.map((project, index) => `<div class="data-row project-row ${Number(project.id) === Number(selectedFarmProjectId) ? 'selected' : ''}"><div><strong>${value(project.name, `Projeto #${project.id}`)}</strong><small>${value(project.description, 'Sem descrição')}</small></div><div class="project-row-actions"><span class="badge ${statusClass(project.status)}">${projectStatusLabel(project.status)}</span><button class="compact secondary" data-move-project="${project.id}" data-move-direction="up" ${index === 0 ? 'disabled' : ''}>↑</button><button class="compact secondary" data-move-project="${project.id}" data-move-direction="down" ${index === projects.length - 1 ? 'disabled' : ''}>↓</button><button class="compact" data-open-project="${project.id}">Gerir</button>${String(project.status || 'draft') === 'draft' ? `<button class="compact danger" data-delete-project="${escape(project.id)}" data-project-name="${escape(project.name || `Projeto #${project.id}`)}">Apagar</button>` : ''}</div></div>`).join('') : '<p class="empty">Ainda não existem projetos.</p>';
+  $('project-list').innerHTML = projects.length ? projects.map((project, index) => `<div class="data-row project-row ${Number(project.id) === Number(selectedFarmProjectId) ? 'selected' : ''}"><div><strong>${value(project.name, `Projeto #${project.id}`)}</strong><small>${value(project.description, 'Sem descrição')}</small></div><div class="project-row-actions"><span class="badge ${statusClass(project.status)}">${projectStatusLabel(project.status)}</span><button class="compact secondary" data-move-project="${project.id}" data-move-direction="up" ${index === 0 ? 'disabled' : ''}>↑</button><button class="compact secondary" data-move-project="${project.id}" data-move-direction="down" ${index === projects.length - 1 ? 'disabled' : ''}>↓</button><button class="compact" data-open-project="${project.id}">Editar</button>${String(project.status || 'draft') === 'draft' ? `<button class="compact danger" data-delete-project="${escape(project.id)}" data-project-name="${escape(project.name || `Projeto #${project.id}`)}">Apagar</button>` : ''}</div></div>`).join('') : '<p class="empty">Ainda não existem projetos.</p>';
 };
 document.addEventListener('submit', async (event) => {
   const form = event.target;
@@ -262,7 +279,7 @@ document.addEventListener('click', async (event) => {
   const removePart = event.target.closest('[data-delete-part]');
   const removeFarmGcode = event.target.closest('[data-delete-farm-gcode]');
   try {
-    if (openProject) { selectedFarmProjectId = Number(openProject.dataset.openProject); await refreshSelectedProject(); return; }
+    if (openProject) { openProjectEditorPage(openProject.dataset.openProject); return; }
     if (closeProject) { closeProjectWorkspace(); return; }
     if (removeProject) {
       const name = removeProject.dataset.projectName || 'este projeto';
@@ -344,4 +361,11 @@ function renderOverviewFromCurrent() {
 
 setupOverviewLayout();
 setupProjectWorkspace();
-populateFilaments(); refreshCustomers(); refreshFiles(); update().finally(renderOverviewFromCurrent); setInterval(() => update().finally(renderOverviewFromCurrent), 15000);
+const initialProjectEditorId = projectEditorIdFromPath();
+if (initialProjectEditorId) showProjectEditorPage(initialProjectEditorId);
+populateFilaments(); refreshCustomers(); refreshFiles(); update().finally(async () => {
+  renderOverviewFromCurrent();
+  if (initialProjectEditorId) {
+    try { await refreshSelectedProject(); } catch (error) { toast(error.message, 'error'); }
+  }
+}); setInterval(() => update().finally(renderOverviewFromCurrent), 15000);
