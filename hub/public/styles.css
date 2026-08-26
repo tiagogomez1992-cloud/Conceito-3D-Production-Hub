@@ -801,6 +801,7 @@ body.project-editor-page .project-workspace {
 .part-edit-form label,
 .part-gcode-form label {
   display:grid;
+  min-width:0;
   gap:6px;
   color:#aeb6bc;
   font-size:.7rem;
@@ -810,9 +811,13 @@ body.project-editor-page .project-workspace {
 }
 
 .project-defaults-form input,
+.project-defaults-form select,
 .project-edit-form input,
+.project-edit-form select,
 .project-part-form input,
+.project-part-form select,
 .part-edit-form input,
+.part-edit-form select,
 .part-gcode-form input,
 .part-gcode-form select {
   width:100%;
@@ -870,7 +875,20 @@ body.project-editor-page .project-workspace {
 
 /* The first project part always starts from the central G-code library. */
 .project-part-form {
-  grid-template-columns:minmax(190px,2fr) minmax(150px,1.3fr) minmax(125px,.7fr) minmax(145px,1fr) minmax(120px,.7fr) auto;
+  grid-template-columns:minmax(230px,2.3fr) minmax(155px,1.4fr) minmax(120px,.72fr) minmax(150px,1fr) minmax(120px,.72fr);
+}
+
+.project-part-form select {
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+.project-part-form button {
+  grid-column:1/-1;
+  justify-self:end;
+  min-height:42px;
+  max-width:100%;
+  white-space:normal;
 }
 
 .project-part-form small {
@@ -879,7 +897,7 @@ body.project-editor-page .project-workspace {
   font-size:.72rem;
 }
 
-@media (max-width:840px) {
+@media (max-width:1050px) {
   .project-console-header,.part-heading { flex-direction:column; }
   .project-status { text-align:left; }
   .project-defaults-form,.project-edit-form,.project-part-form,.part-edit-form,.part-gcode-form { grid-template-columns:1fr 1fr; }
