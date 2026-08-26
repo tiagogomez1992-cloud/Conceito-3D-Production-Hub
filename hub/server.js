@@ -424,6 +424,13 @@ app.post('/api/printers/discover', async (req, res) => {
 });
 app.post('/api/printers', async (req, res) => forwarded(res, await safeRequest('post', `${farmUrl}/api/printers`, req.body)));
 app.post('/api/projects', async (req, res) => forwarded(res, await safeRequest('post', `${farmUrl}/api/projects`, req.body)));
+app.delete('/api/projects/:projectId', async (req, res) => {
+  const projectId = Number(req.params.projectId);
+  if (!Number.isInteger(projectId) || projectId < 1) return res.status(400).json({ error: 'Projeto invalido.' });
+  const result = await safeRequest('delete', `${farmUrl}/api/projects/${projectId}`);
+  if (!result.ok) return res.status(result.status || 502).json({ error: result.error || 'Nao foi possivel apagar o projeto.' });
+  res.status(204).end();
+});
 app.post('/api/spools', async (req, res) => { const { filament_id, remaining_weight } = req.body || {}; if (!filament_id) return res.status(400).json({ error: 'Seleciona um filamento antes de criar a bobine.' }); forwarded(res, await safeRequest('post', `${spoolmanUrl}/api/v1/spool`, { filament_id: Number(filament_id), used_weight: 0, ...(remaining_weight ? { initial_weight: Number(remaining_weight) } : {}) })); });
 app.get('/api/filaments', async (_req, res) => { const result = await safeGet(`${spoolmanUrl}/api/v1/filament`); result.ok ? res.json(Array.isArray(result.data) ? result.data : []) : res.status(502).json({ error: 'Não foi possível obter os filamentos do Spoolman.' }); });
 app.post('/api/assignments', (req, res) => { const { printer_id, spool_id } = req.body || {}; if (!printer_id || !spool_id) return res.status(400).json({ error: 'Impressora e bobine são obrigatórias.' }); const saved = state(); saved.assignments[String(printer_id)] = { spool_id: Number(spool_id), assigned_at: new Date().toISOString() }; save(saved); res.status(201).json(saved.assignments[String(printer_id)]); });

@@ -162,6 +162,29 @@ document.addEventListener('click', async (event) => {
     try { await api(`/api/orders/${remove.dataset.removeOrderFile}/library-files/${remove.dataset.libraryFileId}`, { method: 'DELETE' }); toast('G-code retirado da encomenda.'); update(); } catch (error) { toast(error.message, 'error'); }
   }
 });
+renderProduction = function renderProductionWithProjectDeletion(projects, jobs) {
+  $('jobs-count').textContent = `${jobs.length} total`;
+  $('projects-count').textContent = `${projects.length} total`;
+  $('job-list').innerHTML = jobs.length ? jobs.slice(0, 12).map((job) => `<div class="data-row"><div><strong>${value(job.part_name || job.name, `Trabalho #${job.id}`)}</strong><small>${value(job.printer_name, 'Impressora nao atribuida')}</small></div><span class="badge ${statusClass(job.status)}">${value(job.status)}</span></div>`).join('') : '<p class="empty">Ainda nao existem trabalhos.</p>';
+  $('project-list').innerHTML = projects.length ? projects.slice(0, 12).map((project) => {
+    const urgent = Number(project.priority) > 1;
+    const status = urgent ? 'urgente' : value(project.status);
+    return `<div class="data-row project-row"><div><strong>${value(project.name, `Projeto #${project.id}`)}</strong><small>${value(project.description, 'Sem descricao')}</small></div><div class="project-row-actions"><span class="badge ${urgent ? 'printing' : statusClass(project.status)}">${status}</span><button class="compact danger" data-delete-project="${escape(project.id)}" data-project-name="${escape(project.name || `Projeto #${project.id}`)}">Apagar</button></div></div>`;
+  }).join('') : '<p class="empty">Ainda nao existem projetos.</p>';
+};
+document.addEventListener('click', async (event) => {
+  const removeProject = event.target.closest('[data-delete-project]');
+  if (!removeProject) return;
+  const name = removeProject.dataset.projectName || 'este projeto';
+  if (!confirm(`Apagar ${name}? Esta acao remove o projeto e pode remover os trabalhos associados.`)) return;
+  try {
+    await api(`/api/projects/${encodeURIComponent(removeProject.dataset.deleteProject)}`, { method: 'DELETE' });
+    toast('Projeto apagado.');
+    update();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+});
 function setupOverviewLayout() {
   const overview = $('overview');
   const fleet = overview?.querySelector('.fleet');

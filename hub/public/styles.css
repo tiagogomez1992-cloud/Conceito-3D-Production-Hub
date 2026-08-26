@@ -675,3 +675,13 @@ header .brand::after {
     height:52px;
   }
 }
+
+.project-row-actions {
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+
+.project-row-actions .compact.danger {
+  padding:7px 9px;
+}
