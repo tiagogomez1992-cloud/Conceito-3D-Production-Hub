@@ -686,7 +686,7 @@ header .brand::after {
   padding:7px 9px;
 }
 
-/* Project console — Print Farm Manager workflow inside the Production Hub. */
+/* Project console — native Production Hub workflow. */
 .project-workspace {
   margin:22px 0 28px;
   display:grid;

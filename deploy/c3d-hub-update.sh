@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Atualiza apenas o Conceito 3D Production Hub a partir da branch main.
-# Print Farm Manager e Spoolman não são atualizados automaticamente.
+# O Production Hub é atualizado como serviço autónomo; serviços antigos não são
+# iniciados, alterados ou removidos por este processo.
 set -Eeuo pipefail
 
 APP_DIR="/srv/containers/apps/conceito3d-production-hub"

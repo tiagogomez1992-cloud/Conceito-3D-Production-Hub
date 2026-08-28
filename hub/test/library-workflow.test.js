@@ -35,7 +35,7 @@ function gcodeForm(partId, filename, quantity, printerModel, color) {
 
 test.before(async () => {
   dataDir = fs.mkdtempSync(path.join(process.cwd(), '.test-data-'));
-  server = spawn(process.execPath, ['server.js'], { cwd: path.resolve(__dirname, '..'), env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, PRINT_FARM_URL: 'http://127.0.0.1:18982', SPOOLMAN_URL: 'http://127.0.0.1:18983' }, stdio: 'pipe' });
+  server = spawn(process.execPath, ['server.js'], { cwd: path.resolve(__dirname, '..'), env: { ...process.env, PORT: String(port), DATA_DIR: dataDir }, stdio: 'pipe' });
   await waitForServer();
 });
 test.after(() => {
@@ -75,4 +75,22 @@ test('peça agrega variantes e a encomenda escolhe um G-code', async () => {
 
   const protectedFile = await json(`/api/files/${second.body.id}`, { method: 'DELETE' });
   assert.equal(protectedFile.response.status, 409);
+});
+
+test('impressora, bobine e projeto são guardados pelo próprio portal', async () => {
+  const printer = await json('/api/printers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'S1 MAX', ip: '127.0.0.1', model: 'ANYCUBIC S1 MAX', type: 'klipper' }) });
+  assert.equal(printer.response.status, 201);
+
+  const spool = await json('/api/spools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ material: 'PETG', color: 'Preto', brand: 'Pro3DWorld', remaining_weight: 1000 }) });
+  assert.equal(spool.response.status, 201);
+  assert.equal(spool.body.filament.material, 'PETG');
+
+  const project = await json('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Teste standalone' }) });
+  assert.equal(project.response.status, 201);
+
+  const summary = await json('/api/summary');
+  assert.equal(summary.response.status, 200);
+  assert.equal(summary.body.printers.total, 1);
+  assert.equal(summary.body.spools.total, 1);
+  assert.equal(summary.body.production.projects.length, 1);
 });
