@@ -53,6 +53,11 @@ function toast(message, kind = 'success') { const t = $('toast'); t.textContent 
 async function api(url, options = {}) { const r = await fetch(url, options); const body = await r.json().catch(() => ({})); if (!r.ok) throw new Error(body.error || 'O pedido não foi aceite.'); return body; }
 function selectOptions(selected) { return ['<option value="">Sem bobine atribuída</option>', ...latest.spools.map((s) => `<option value="${s.id}" ${Number(selected) === Number(s.id) ? 'selected' : ''}>#${s.id} · ${escape(spoolInfo(s).material)} · ${spoolInfo(s).remaining} g</option>`)].join(''); }
 
+function assigned(printerId) {
+  const spoolId = latest.assignments?.[String(printerId)]?.spool_id;
+  return latest.spools.find((spool) => Number(spool.id) === Number(spoolId)) || null;
+}
+
 function renderPrinters(items) {
   $('printer-list').innerHTML = items.length ? items.map((p) => {
     const progress = Number(p.job_progress || 0) * (Number(p.job_progress || 0) <= 1 ? 100 : 1);
