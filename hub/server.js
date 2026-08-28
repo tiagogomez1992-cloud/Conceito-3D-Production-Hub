@@ -734,7 +734,7 @@ app.post('/api/printers', async (req, res) => {
   if (!name || !ip || !model) return res.status(400).json({ error: 'Nome, IP e modelo são obrigatórios.' });
   if (!printerConnectors.has(type)) return res.status(400).json({ error: 'O tipo de ligação da impressora não é suportado.' });
   if (saved.printers.some((printer) => printer.name.toLocaleLowerCase('pt-PT') === name.toLocaleLowerCase('pt-PT'))) return res.status(409).json({ error: 'Já existe uma impressora com este nome.' });
-  const now = new Date().toISOString(); const printer = { id: nextId(saved.printers), name, ip, model, type, api_key: clean(req.body?.api_key, 200), group_name: clean(req.body?.group_name, 100), status: 'UNKNOWN', job_name: null, job_progress: 0, created_at: now, updated_at: now };
+  const now = new Date().toISOString(); const printer = { id: nextId(saved.printers), name, ip, brand: clean(req.body?.brand, 80), model, type, api_key: clean(req.body?.api_key, 200), group_name: clean(req.body?.group_name, 100), status: 'UNKNOWN', job_name: null, job_progress: 0, created_at: now, updated_at: now };
   saved.printers.push(printer); save(saved); res.status(201).json(printer);
 });
 app.delete('/api/printers/:id', (req, res) => {

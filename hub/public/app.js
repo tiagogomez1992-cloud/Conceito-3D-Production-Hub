@@ -10,6 +10,45 @@ const escape = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({ '&': '&amp;'
 const value = (v, fallback = '—') => v === undefined || v === null || v === '' ? fallback : escape(v);
 const statusClass = (v) => String(v || '').toLowerCase() === 'printing' ? 'printing' : ['idle', 'finished', 'online', 'paused', 'completed'].includes(String(v || '').toLowerCase()) ? 'online' : 'offline';
 const spoolInfo = (spool) => ({ material: spool?.filament?.material || spool?.filament?.name || 'Material não definido', remaining: Math.round(Number(spool?.remaining_weight || 0)) });
+const customModelValue = '__custom__';
+const printerCatalog = Object.freeze({
+  Anycubic: ['Kobra S1 Max', 'Kobra S1', 'Kobra X', 'Kobra 3', 'Kobra 3 Combo', 'Kobra 2 Max', 'Kobra 2 Pro', 'Kobra 2 Plus', 'Kobra 2 Neo', 'Kobra 2', 'Vyper'],
+  'Bambu Lab': ['H2D', 'H2S', 'X1 Carbon', 'X1E', 'P1S', 'P1P', 'A1', 'A1 mini'],
+  Creality: ['K2 Plus', 'K1 Max', 'K1C', 'K1', 'Ender-5 Max', 'Ender-3 V3', 'Ender-3 V3 KE', 'Ender-3 V3 SE', 'Ender-3 S1 Pro', 'CR-10 Smart Pro'],
+  Elegoo: ['OrangeStorm Giga', 'Centauri Carbon', 'Centauri', 'Neptune 4 Max', 'Neptune 4 Plus', 'Neptune 4 Pro', 'Neptune 4'],
+  Flashforge: ['Adventurer 5M Pro', 'Adventurer 5M', 'Creator 4', 'Guider 3 Plus'],
+  Prusa: ['CORE One', 'XL', 'MK4S', 'MK4', 'MINI+'],
+  QIDI: ['Q1 Pro', 'X-Max 3', 'X-Plus 3', 'X-Smart 3'],
+  RatRig: ['V-Core 4', 'V-Core 3.1', 'V-Core 3'],
+  Sovol: ['SV08', 'SV07 Plus', 'SV07', 'SV06 Plus', 'SV06'],
+  Voron: ['2.4', 'Trident', 'V0.2'],
+  'Outra / personalizada': [],
+});
+function setCustomPrinterModel(active) {
+  const wrap = $('printer-custom-model-wrap'); const input = $('printer-custom-model');
+  wrap.classList.toggle('hidden', !active); input.disabled = !active; input.required = active;
+  if (!active) input.value = '';
+}
+function updatePrinterModelOptions(selectedModel = '') {
+  const brand = $('printer-brand').value; const models = printerCatalog[brand] || [];
+  const model = $('printer-model');
+  model.innerHTML = ['<option value="">Selecionar modelo</option>', ...models.map((entry) => `<option value="${escape(`${brand} ${entry}`)}">${escape(entry)}</option>`), `<option value="${customModelValue}">Outro modelo / perfil personalizado</option>`].join('');
+  if (selectedModel && [...model.options].some((option) => option.value === selectedModel)) model.value = selectedModel;
+  else if (selectedModel) { model.value = customModelValue; $('printer-custom-model').value = selectedModel; }
+  setCustomPrinterModel(model.value === customModelValue);
+}
+function setPrinterCatalogSelection(brand = '', model = '') {
+  const brandInput = $('printer-brand');
+  brandInput.value = brand && Object.hasOwn(printerCatalog, brand) ? brand : '';
+  updatePrinterModelOptions(model);
+}
+function setupPrinterCatalog() {
+  const brand = $('printer-brand'); const model = $('printer-model');
+  brand.innerHTML = ['<option value="">Selecionar marca</option>', ...Object.keys(printerCatalog).map((entry) => `<option value="${escape(entry)}">${escape(entry)}</option>`)].join('');
+  updatePrinterModelOptions();
+  brand.addEventListener('change', () => updatePrinterModelOptions());
+  model.addEventListener('change', () => setCustomPrinterModel(model.value === customModelValue));
+}
 function toast(message, kind = 'success') { const t = $('toast'); t.textContent = message; t.className = `toast show ${kind}`; clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.className = 'toast'; }, 4200); }
 async function api(url, options = {}) { const r = await fetch(url, options); const body = await r.json().catch(() => ({})); if (!r.ok) throw new Error(body.error || 'O pedido não foi aceite.'); return body; }
 function selectOptions(selected) { return ['<option value="">Sem bobine atribuída</option>', ...latest.spools.map((s) => `<option value="${s.id}" ${Number(selected) === Number(s.id) ? 'selected' : ''}>#${s.id} · ${escape(spoolInfo(s).material)} · ${spoolInfo(s).remaining} g</option>`)].join(''); }
@@ -21,7 +60,7 @@ function renderPrinters(items) {
   }).join('') : '<p class="empty">Ainda não há impressoras configuradas.</p>';
   $('printer-grid').innerHTML = items.length ? items.map((p) => {
     const spool = assigned(p.id); const assignment = latest.assignments?.[String(p.id)];
-    return `<article class="machine-card"><div class="machine-top"><div><span class="status ${statusClass(p.status)}"></span><strong>${value(p.name, 'Sem nome')}</strong></div><span class="badge ${statusClass(p.status)}">${value(p.status)}</span></div><dl><div><dt>Modelo</dt><dd>${value(p.model)}</dd></div><div><dt>Ligação</dt><dd>${escape(p.type || '—')}</dd></div><div><dt>Trabalho</dt><dd>${value(p.job_name, 'Sem trabalho ativo')}</dd></div><div><dt>Bobine</dt><dd>${spool ? `#${spool.id} · ${escape(spoolInfo(spool).material)} · ${spoolInfo(spool).remaining} g` : 'Não atribuída'}</dd></div></dl><div class="machine-actions"><label>Trocar bobine<select data-printer="${p.id}">${selectOptions(assignment?.spool_id)}</select></label><button class="compact" data-save-assignment="${p.id}">Guardar</button>${spool ? `<button class="compact secondary" data-consume="${p.id}" data-spool="${spool.id}">Registar consumo</button>` : ''}<button class="compact danger" data-delete-printer="${p.id}" data-printer-name="${escape(p.name)}">Remover</button></div></article>`;
+    return `<article class="machine-card"><div class="machine-top"><div><span class="status ${statusClass(p.status)}"></span><strong>${value(p.name, 'Sem nome')}</strong></div><span class="badge ${statusClass(p.status)}">${value(p.status)}</span></div><dl><div><dt>Marca</dt><dd>${value(p.brand, 'Não indicada')}</dd></div><div><dt>Modelo</dt><dd>${value(p.model)}</dd></div><div><dt>Ligação</dt><dd>${escape(p.type || '—')}</dd></div><div><dt>Trabalho</dt><dd>${value(p.job_name, 'Sem trabalho ativo')}</dd></div><div><dt>Bobine</dt><dd>${spool ? `#${spool.id} · ${escape(spoolInfo(spool).material)} · ${spoolInfo(spool).remaining} g` : 'Não atribuída'}</dd></div></dl><div class="machine-actions"><label>Trocar bobine<select data-printer="${p.id}">${selectOptions(assignment?.spool_id)}</select></label><button class="compact" data-save-assignment="${p.id}">Guardar</button>${spool ? `<button class="compact secondary" data-consume="${p.id}" data-spool="${spool.id}">Registar consumo</button>` : ''}<button class="compact danger" data-delete-printer="${p.id}" data-printer-name="${escape(p.name)}">Remover</button></div></article>`;
   }).join('') : '<p class="empty">Ainda não há impressoras configuradas.</p>';
 }
 function renderDiscovery(data) {
@@ -83,11 +122,11 @@ document.querySelector('main.shell').insertBefore(historyView, $('files'));
 historyTab.onclick = () => { document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === historyTab)); document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view === historyView)); };
 document.addEventListener('click', async (event) => {
   const open = event.target.closest('[data-open-form]'), close = event.target.closest('[data-close-form]');
-  if (open) $(open.dataset.openForm).classList.remove('hidden');
+  if (open) { $(open.dataset.openForm).classList.remove('hidden'); if (open.dataset.openForm === 'printer-form') setPrinterCatalogSelection(); }
   if (close) { $(close.dataset.closeForm).classList.add('hidden'); if (close.dataset.closeForm === 'customer-form') resetTemplateForm(); }
   const removeArea = event.target.closest('[data-remove-template-field]'); if (removeArea) { templateFields.splice(Number(removeArea.dataset.removeTemplateField), 1); renderTemplateFields(); }
   if (event.target.id === 'clear-template-fields') { templateFields = []; renderTemplateFields(); }
-  const discovered = event.target.closest('[data-add-discovered]'); if (discovered) { try { const printer = JSON.parse(discovered.dataset.addDiscovered); const form = $('printer-form'); form.querySelector('[name="name"]').value = `${printer.detected_as} ${printer.ip}`; form.querySelector('[name="ip"]').value = printer.ip; form.querySelector('[name="type"]').value = printer.type; form.querySelector('[name="group_name"]').value = printer.detected_as; form.classList.remove('hidden'); form.querySelector('[name="model"]').focus(); toast('Dados preenchidos. Indica o modelo e confirma a adição.'); } catch { toast('Não foi possível preparar esta impressora.', 'error'); } }
+  const discovered = event.target.closest('[data-add-discovered]'); if (discovered) { try { const printer = JSON.parse(discovered.dataset.addDiscovered); const form = $('printer-form'); form.querySelector('[name="name"]').value = `${printer.detected_as} ${printer.ip}`; form.querySelector('[name="ip"]').value = printer.ip; form.querySelector('[name="type"]').value = printer.type; form.querySelector('[name="group_name"]').value = printer.detected_as; setPrinterCatalogSelection(); form.classList.remove('hidden'); $('printer-brand').focus(); toast('Dados preenchidos. Seleciona a marca e o modelo antes de confirmar.'); } catch { toast('Não foi possível preparar esta impressora.', 'error'); } }
   const deletePrinter = event.target.closest('[data-delete-printer]'); if (deletePrinter && confirm(`Remover a impressora ${deletePrinter.dataset.printerName}? Esta ação não altera a impressora física.`)) try { await api(`/api/printers/${deletePrinter.dataset.deletePrinter}`, { method: 'DELETE' }); toast('Impressora removida do portal.'); update(); } catch (error) { toast(error.message, 'error'); }
   const deleteCustomer = event.target.closest('[data-delete-customer]'); if (deleteCustomer && confirm('Remover este cliente e o respetivo modelo?')) try { await api(`/api/customers/${deleteCustomer.dataset.deleteCustomer}`, { method: 'DELETE' }); toast('Cliente removido.'); refreshCustomers(); } catch (error) { toast(error.message, 'error'); }
   const deleteFile = event.target.closest('[data-delete-file]'); if (deleteFile && confirm('Remover este G-code da biblioteca?')) try { await api(`/api/files/${deleteFile.dataset.deleteFile}`, { method: 'DELETE' }); toast('G-code removido.'); refreshFiles(); } catch (error) { toast(error.message, 'error'); }
@@ -117,9 +156,10 @@ for (const id of ['order-form', 'project-form', 'printer-form', 'spool-form', 'c
   event.preventDefault(); const values = new FormData(formElement); const form = Object.fromEntries(values.entries()); const endpoint = id === 'order-form' ? '/api/orders' : id === 'project-form' ? '/api/projects' : id === 'printer-form' ? '/api/printers' : id === 'spool-form' ? '/api/spools' : id === 'customer-form' ? '/api/customers' : '/api/library-parts';
   try {
     if (id === 'customer-form') { if (!templatePreview) throw new Error('Seleciona uma encomenda PDF tipo.'); if (!templateFields.length) throw new Error('Marca pelo menos uma área de leitura no PDF.'); form.template = { sample_name: templatePreview.file_name, fields: templateFields }; delete form.sample_pdf; }
+    if (id === 'printer-form') { if (form.model === customModelValue) form.model = String(form.custom_model || '').trim(); delete form.custom_model; if (!form.model) throw new Error('Seleciona um modelo ou indica um perfil personalizado.'); }
     if (id === 'order-form') { const pdf = values.get('order_pdf'); delete form.order_pdf; if (pdf instanceof File && pdf.size) { const upload = new FormData(); upload.append('pdf', pdf); if (form.customer_id) upload.append('customer_id', form.customer_id); const draft = await api('/api/orders/import-pdf', { method: 'POST', body: upload }); form.title = form.title || (draft.order_number ? `Encomenda ${draft.order_number}` : pdf.name.replace(/\.pdf$/i, '')); form.customer = form.customer || draft.customer || ''; form.customer_id = draft.customer_id || form.customer_id || ''; form.items = draft.items || []; form.document = { file_name: draft.file_name, order_number: draft.order_number || null, ocr_used: Boolean(draft.ocr_used), template_used: Boolean(draft.template_used), imported_at: new Date().toISOString() }; if (draft.warnings?.length) form.notes = [form.notes, `PDF: ${draft.warnings.join(' ')}`].filter(Boolean).join('\n'); toast(draft.template_used ? 'PDF lido com o modelo do cliente.' : draft.ocr_used ? 'PDF lido por OCR.' : 'Texto do PDF lido automaticamente.'); } if (!String(form.title || '').trim()) throw new Error('Indica um nome ou seleciona um PDF com referência.'); }
     const result = await api(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
-    formElement.reset(); formElement.classList.add('hidden'); if (id === 'customer-form') { resetTemplateForm(); await refreshCustomers(); } if (id === 'library-part-form') await refreshFiles(); toast(id === 'customer-form' ? 'Cliente e modelo guardados.' : id === 'library-part-form' ? 'Peça criada. Agora adiciona os G-codes.' : id === 'printer-form' ? 'Impressora adicionada ao Production Hub.' : id === 'spool-form' ? 'Bobine adicionada ao inventário do portal.' : 'Registo criado.'); update();
+    formElement.reset(); if (id === 'printer-form') setPrinterCatalogSelection(); formElement.classList.add('hidden'); if (id === 'customer-form') { resetTemplateForm(); await refreshCustomers(); } if (id === 'library-part-form') await refreshFiles(); toast(id === 'customer-form' ? 'Cliente e modelo guardados.' : id === 'library-part-form' ? 'Peça criada. Agora adiciona os G-codes.' : id === 'printer-form' ? 'Impressora adicionada ao Production Hub.' : id === 'spool-form' ? 'Bobine adicionada ao inventário do portal.' : 'Registo criado.'); update();
   } catch (error) { toast(error.message, 'error'); }
 });
 document.addEventListener('submit', async (event) => {
@@ -435,6 +475,7 @@ function renderOverviewFromCurrent() {
 
 setupOverviewLayout();
 setupProjectWorkspace();
+setupPrinterCatalog();
 const initialProjectEditorId = projectEditorIdFromPath();
 if (initialProjectEditorId) showProjectEditorPage(initialProjectEditorId);
 populateFilaments(); refreshCustomers(); refreshFiles(); update().finally(async () => {
