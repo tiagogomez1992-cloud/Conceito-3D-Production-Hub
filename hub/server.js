@@ -16,6 +16,7 @@ const farmUrl = (process.env.PRINT_FARM_URL || 'http://print-farm-manager:3000')
 const spoolmanUrl = (process.env.SPOOLMAN_URL || 'http://spoolman:8000').replace(/\/$/, '');
 const client = axios.create({ timeout: 5000 });
 const discoveryClient = axios.create({ timeout: 1200, validateStatus: () => true, maxRedirects: 0 });
+const printerConnectors = new Set(['prusa', 'elegoo-centauri', 'elegoo-centauri2', 'bambu', 'klipper', 'octoprint']);
 const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
 const uploadsDir = path.join(dataDir, 'uploads');
 const stateFile = path.join(dataDir, 'portal-state.json');
@@ -355,6 +356,15 @@ async function discoverLocalPrinters(requestedSubnet) {
 async function safeGet(url) { try { const response = await client.get(url); return { ok: true, data: response.data }; } catch (error) { return { ok: false, error: error.message }; } }
 async function safeRequest(method, url, data) { try { const response = await client.request({ method, url, data }); return { ok: true, data: response.data }; } catch (error) { return { ok: false, status: error.response?.status || 502, error: error.response?.data?.error || error.response?.data?.detail || error.message }; } }
 function forwarded(res, result, status = 201) { return result.ok ? res.status(status).json(result.data) : res.status(result.status || 502).json({ error: result.error || 'O serviço não aceitou o pedido.' }); }
+function printerModelId(value) {
+  return clean(value, 100).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+function samePrinterModel(model, input, id) {
+  const normalizedInput = clean(input, 100).toLocaleLowerCase('pt-PT');
+  return String(model?.model_id || '').toLocaleLowerCase('pt-PT') === normalizedInput
+    || clean(model?.label, 100).toLocaleLowerCase('pt-PT') === normalizedInput
+    || String(model?.model_id || '') === id;
+}
 
 app.get('/api/summary', async (_req, res) => {
   const [health, printers, spools, projects, jobs] = await Promise.all([safeGet(`${farmUrl}/api/health`), safeGet(`${farmUrl}/api/printers`), safeGet(`${spoolmanUrl}/api/v1/spool`), safeGet(`${farmUrl}/api/projects`), safeGet(`${farmUrl}/api/jobs`)]);
@@ -576,7 +586,30 @@ app.post('/api/printers/discover', async (req, res) => {
   const requested = clean(req.body?.subnet, 32); if (requested && !requestedPrivateNetwork(requested)) return res.status(400).json({ error: 'Indica uma rede privada /24, por exemplo 192.168.1.0/24.' });
   try { res.json(await discoverLocalPrinters(requested)); } catch (error) { res.status(502).json({ error: `Não foi possível analisar a rede local: ${error.message || 'erro desconhecido'}` }); }
 });
-app.post('/api/printers', async (req, res) => forwarded(res, await safeRequest('post', `${farmUrl}/api/printers`, req.body)));
+app.post('/api/printers', async (req, res) => {
+  const requestedModel = clean(req.body?.model, 100);
+  const connector = clean(req.body?.type, 40) || 'klipper';
+  const modelId = printerModelId(requestedModel);
+  if (!requestedModel || !modelId) return res.status(400).json({ error: 'Indica um modelo de impressora válido.' });
+  if (!printerConnectors.has(connector)) return res.status(400).json({ error: 'O tipo de ligação da impressora não é suportado.' });
+
+  const models = await safeGet(`${farmUrl}/api/models`);
+  if (!models.ok || !Array.isArray(models.data)) return res.status(502).json({ error: 'Não foi possível consultar os modelos registados no Print Farm Manager.' });
+
+  const existing = models.data.find((model) => samePrinterModel(model, requestedModel, modelId));
+  let createdModel = false;
+  let registeredModelId = existing?.model_id || modelId;
+  if (!existing) {
+    const created = await safeRequest('post', `${farmUrl}/api/models`, { model_id: modelId, label: requestedModel, connector });
+    if (!created.ok && created.status !== 409) return res.status(created.status || 502).json({ error: created.error || 'Não foi possível registar o modelo da impressora.' });
+    registeredModelId = created.data?.model_id || modelId;
+    createdModel = created.ok;
+  }
+
+  const printer = await safeRequest('post', `${farmUrl}/api/printers`, { ...req.body, type: connector, model: registeredModelId });
+  if (!printer.ok) return res.status(printer.status || 502).json({ error: printer.error || 'Não foi possível adicionar a impressora.' });
+  res.status(201).json({ ...printer.data, _portal: { model_id: registeredModelId, model_created: createdModel } });
+});
 app.post('/api/projects', async (req, res) => forwarded(res, await safeRequest('post', `${farmUrl}/api/projects`, req.body)));
 function positiveProjectId(value) {
   const id = Number(value);
