@@ -737,6 +737,16 @@ app.post('/api/printers', async (req, res) => {
   const now = new Date().toISOString(); const printer = { id: nextId(saved.printers), name, ip, brand: clean(req.body?.brand, 80), model, type, api_key: clean(req.body?.api_key, 200), group_name: clean(req.body?.group_name, 100), status: 'UNKNOWN', job_name: null, job_progress: 0, created_at: now, updated_at: now };
   saved.printers.push(printer); save(saved); res.status(201).json(printer);
 });
+app.put('/api/printers/:id', (req, res) => {
+  const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
+  if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
+  const name = clean(req.body?.name, 100); const ip = clean(req.body?.ip, 160); const model = clean(req.body?.model, 100); const type = clean(req.body?.type, 40) || 'klipper';
+  if (!name || !ip || !model) return res.status(400).json({ error: 'Nome, IP e modelo são obrigatórios.' });
+  if (!printerConnectors.has(type)) return res.status(400).json({ error: 'O tipo de ligação da impressora não é suportado.' });
+  if (saved.printers.some((item) => Number(item.id) !== Number(printer.id) && item.name.toLocaleLowerCase('pt-PT') === name.toLocaleLowerCase('pt-PT'))) return res.status(409).json({ error: 'Já existe uma impressora com este nome.' });
+  Object.assign(printer, { name, ip, brand: clean(req.body?.brand, 80), model, type, api_key: clean(req.body?.api_key, 200), group_name: clean(req.body?.group_name, 100), updated_at: new Date().toISOString() });
+  save(saved); res.json(printer);
+});
 app.delete('/api/printers/:id', (req, res) => {
   const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
   if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
