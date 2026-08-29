@@ -16,7 +16,7 @@ const port = Number(process.env.PORT || 8080);
 const internalProductionUrl = 'http://production-hub.local';
 const client = axios.create({ timeout: 5000 });
 const discoveryClient = axios.create({ timeout: 1200, validateStatus: () => true, maxRedirects: 0 });
-const printerConnectors = new Set(['prusa', 'elegoo-centauri', 'elegoo-centauri2', 'bambu', 'klipper', 'octoprint']);
+const printerConnectors = new Set(['prusa', 'elegoo-centauri', 'elegoo-centauri2', 'bambu', 'creality', 'anycubic', 'klipper', 'octoprint']);
 const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
 const uploadsDir = path.join(dataDir, 'uploads');
 const stateFile = path.join(dataDir, 'portal-state.json');
@@ -335,7 +335,7 @@ function portOpen(host, port) {
 
 async function getDiscovery(url) { try { return await discoveryClient.get(url); } catch { return null; } }
 async function discoverPrinterAt(ip) {
-  const ports = await Promise.all([7125, 4408, 5000, 80].map(async (port) => ({ port, open: await portOpen(ip, port) })));
+  const ports = await Promise.all([7125, 4408, 5000, 80, 3030, 8883, 990, 9999, 18910].map(async (port) => ({ port, open: await portOpen(ip, port) })));
   const open = new Set(ports.filter((entry) => entry.open).map((entry) => entry.port));
   for (const port of [7125, 4408, 80]) if (open.has(port)) {
     const response = await getDiscovery(`http://${ip}:${port}/server/info`);
@@ -352,6 +352,13 @@ async function discoverPrinterAt(ip) {
     if (/octoprint/i.test(text)) return { ip, port: 80, type: 'octoprint', detected_as: 'OctoPrint', url: `http://${ip}` };
     if (/prusalink|prusa link/i.test(text)) return { ip, port: 80, type: 'prusa', detected_as: 'PrusaLink', url: `http://${ip}` };
   }
+  if (open.has(18910)) {
+    const response = await getDiscovery(`http://${ip}:18910/info`);
+    if (response?.status === 200 && (response.data?.ctrlInfoUrl || response.data?.modelId || response.data?.token)) return { ip, port: 18910, type: 'anycubic', detected_as: 'Anycubic LAN', url: `http://${ip}:18910`, requirements: 'Ativa o modo LAN na impressora para monitorização e controlo.' };
+  }
+  if (open.has(3030)) return { ip, port: 3030, type: 'elegoo-centauri', detected_as: 'Elegoo SDCP', url: `ws://${ip}:3030`, requirements: 'Protocolo SDCP detetado; não requer chave API.' };
+  if (open.has(9999)) return { ip, port: 9999, type: 'creality', detected_as: 'Creality LAN', url: `ws://${ip}:9999`, requirements: 'Controlador Creality LAN detetado.' };
+  if (open.has(8883) && open.has(990)) return { ip, port: 8883, type: 'bambu', detected_as: 'Bambu Lab LAN', url: `mqtts://${ip}:8883`, requirements: 'Ativa o modo LAN e indica o código de acesso e o número de série.' };
   return null;
 }
 
@@ -376,6 +383,9 @@ function printerEndpoint(printer, pathName, defaultPort) {
   if (!host) return null;
   if (defaultPort && !/:[0-9]+$/.test(host)) host = `${host}:${defaultPort}`;
   return `http://${host}${pathName}`;
+}
+function printerHost(printer) {
+  return clean(printer.ip, 160).replace(/^https?:\/\//i, '').replace(/\/$/, '').split(':')[0];
 }
 function canonicalState(value) {
   const stateValue = String(value || '').toLowerCase();
@@ -403,6 +413,15 @@ async function directPrinterStatus(printer) {
       const response = await client.get(printerEndpoint(printer, '/api/v1/status', 80), { timeout: 3500, headers: printer.api_key ? { 'X-Api-Key': printer.api_key } : {} });
       const printerData = response.data?.printer || response.data || {}; const job = response.data?.job || {};
       return { ...printer, status: canonicalState(printerData.state || printerData.status), job_name: job.file?.name || job.file_name || null, job_progress: Number(job.progress || printerData.progress || 0), job_time_remaining: Number(job.time_remaining || 0) || null, checked_at: new Date().toISOString() };
+    }
+    if (printer.type === 'anycubic') {
+      await client.get(printerEndpoint(printer, '/info', 18910), { timeout: 3500 });
+      return { ...printer, status: 'ONLINE', job_name: null, job_progress: 0, job_time_remaining: null, checked_at: new Date().toISOString() };
+    }
+    if (printer.type === 'creality' || printer.type === 'elegoo-centauri' || printer.type === 'elegoo-centauri2' || printer.type === 'bambu') {
+      const port = printer.type === 'creality' ? 9999 : printer.type.startsWith('elegoo') ? 3030 : 8883;
+      const reachable = await portOpen(printerHost(printer), port);
+      return { ...printer, status: reachable ? 'ONLINE' : 'OFFLINE', job_name: null, job_progress: 0, job_time_remaining: null, checked_at: new Date().toISOString() };
     }
     return { ...printer, status: 'UNKNOWN', job_name: null, job_progress: 0, job_time_remaining: null, checked_at: new Date().toISOString() };
   } catch { return unavailable; }
@@ -734,7 +753,7 @@ app.post('/api/printers', async (req, res) => {
   if (!name || !ip || !model) return res.status(400).json({ error: 'Nome, IP e modelo são obrigatórios.' });
   if (!printerConnectors.has(type)) return res.status(400).json({ error: 'O tipo de ligação da impressora não é suportado.' });
   if (saved.printers.some((printer) => printer.name.toLocaleLowerCase('pt-PT') === name.toLocaleLowerCase('pt-PT'))) return res.status(409).json({ error: 'Já existe uma impressora com este nome.' });
-  const now = new Date().toISOString(); const printer = { id: nextId(saved.printers), name, ip, brand: clean(req.body?.brand, 80), model, type, api_key: clean(req.body?.api_key, 200), group_name: clean(req.body?.group_name, 100), status: 'UNKNOWN', job_name: null, job_progress: 0, created_at: now, updated_at: now };
+  const now = new Date().toISOString(); const printer = { id: nextId(saved.printers), name, ip, brand: clean(req.body?.brand, 80), model, type, api_key: clean(req.body?.api_key, 200), serial_number: clean(req.body?.serial_number, 160), group_name: clean(req.body?.group_name, 100), status: 'UNKNOWN', job_name: null, job_progress: 0, created_at: now, updated_at: now };
   saved.printers.push(printer); save(saved); res.status(201).json(printer);
 });
 app.put('/api/printers/:id', (req, res) => {
@@ -744,7 +763,7 @@ app.put('/api/printers/:id', (req, res) => {
   if (!name || !ip || !model) return res.status(400).json({ error: 'Nome, IP e modelo são obrigatórios.' });
   if (!printerConnectors.has(type)) return res.status(400).json({ error: 'O tipo de ligação da impressora não é suportado.' });
   if (saved.printers.some((item) => Number(item.id) !== Number(printer.id) && item.name.toLocaleLowerCase('pt-PT') === name.toLocaleLowerCase('pt-PT'))) return res.status(409).json({ error: 'Já existe uma impressora com este nome.' });
-  Object.assign(printer, { name, ip, brand: clean(req.body?.brand, 80), model, type, api_key: clean(req.body?.api_key, 200), group_name: clean(req.body?.group_name, 100), updated_at: new Date().toISOString() });
+  Object.assign(printer, { name, ip, brand: clean(req.body?.brand, 80), model, type, api_key: clean(req.body?.api_key, 200), serial_number: clean(req.body?.serial_number, 160), group_name: clean(req.body?.group_name, 100), updated_at: new Date().toISOString() });
   save(saved); res.json(printer);
 });
 app.delete('/api/printers/:id', (req, res) => {
