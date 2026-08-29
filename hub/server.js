@@ -354,7 +354,9 @@ async function discoverPrinterAt(ip) {
   }
   if (open.has(18910)) {
     const response = await getDiscovery(`http://${ip}:18910/info`);
-    if (response?.status === 200 && (response.data?.ctrlInfoUrl || response.data?.modelId || response.data?.token)) return { ip, port: 18910, type: 'anycubic', detected_as: 'Anycubic LAN', url: `http://${ip}:18910`, requirements: 'Ativa o modo LAN na impressora para monitorização e controlo.' };
+    const details = response?.data?.data || response?.data || {};
+    const ready = response?.status === 200 && (details.ctrlInfoUrl || details.modelId || details.modeId || details.token);
+    return { ip, port: 18910, type: 'anycubic', detected_as: ready ? 'Anycubic LAN' : 'Anycubic LAN (configuração necessária)', url: `http://${ip}:18910`, requirements: ready ? 'API Anycubic LAN disponível.' : 'Serviço Anycubic detetado. Ativa o modo LAN na impressora e confirma o código de acesso.' };
   }
   if (open.has(3030)) return { ip, port: 3030, type: 'elegoo-centauri', detected_as: 'Elegoo SDCP', url: `ws://${ip}:3030`, requirements: 'Protocolo SDCP detetado; não requer chave API.' };
   if (open.has(9999)) return { ip, port: 9999, type: 'creality', detected_as: 'Creality LAN', url: `ws://${ip}:9999`, requirements: 'Controlador Creality LAN detetado.' };
