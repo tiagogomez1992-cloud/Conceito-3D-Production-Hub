@@ -9,10 +9,21 @@ services:
       PORT: 8080
       HUB_AUTH_USER: ${HUB_AUTH_USER:-}
       HUB_AUTH_PASSWORD: ${HUB_AUTH_PASSWORD:-}
+      AI_PROVIDER: ${AI_PROVIDER:-ollama}
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
     volumes:
       - hub-data:/app/data
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: conceito3d-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+
 volumes:
   hub-data:
+  ollama-data:

@@ -144,7 +144,7 @@ function renderOrderPdfAnalysis(draft) {
   const box = $('order-ai-analysis'); if (!box) return;
   const items = Array.isArray(draft.items) ? draft.items : [];
   const priority = ['Normal', 'Alta', 'Urgente'][Number(draft.priority) || 0];
-  const source = draft.ai_provider === 'openai' ? `ChatGPT · ${draft.ai_model || 'modelo configurado'}` : (draft.ocr_used ? 'OCR local aplicado' : 'Texto do PDF lido localmente');
+  const source = draft.ai_provider === 'ollama' ? `IA local · ${draft.ai_model || 'modelo configurado'}` : draft.ai_provider === 'openai' ? `ChatGPT · ${draft.ai_model || 'modelo configurado'}` : (draft.ocr_used ? 'OCR local aplicado' : 'Texto do PDF lido localmente');
   const fields = [draft.customer && `Cliente: ${draft.customer}`, draft.order_number && `Referência: ${draft.order_number}`, draft.due_date && `Prazo: ${draft.due_date}`, Number(draft.priority) ? `Prioridade: ${priority}` : '', source, draft.template_used ? 'Modelo de cliente aplicado' : '', draft.learning_applied ? 'Correção anterior aplicada' : ''].filter(Boolean);
   const lines = items.slice(0, 8).map((item) => `<li><strong>${escape(item.part_code || 'Sem referência')}</strong>${item.description ? ` · ${escape(item.description)}` : ''} · ${Number(item.quantity || 0)} un.</li>`).join('');
   const warnings = [...(draft.warnings || []), ...(draft.ai_warning ? [draft.ai_warning] : [])].map((warning) => `<p class="order-ai-warning">${escape(warning)}</p>`).join('');
