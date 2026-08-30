@@ -7,6 +7,8 @@ let templatePreview = null;
 let templateFields = [];
 let templateDrag = null;
 let editingPrinterId = null;
+let pendingOrderPdfDraft = null;
+let pendingOrderPdfSignature = '';
 const escape = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
 const value = (v, fallback = '—') => v === undefined || v === null || v === '' ? fallback : escape(v);
 const statusClass = (v) => String(v || '').toLowerCase() === 'printing' ? 'printing' : ['idle', 'finished', 'online', 'paused', 'completed'].includes(String(v || '').toLowerCase()) ? 'online' : 'offline';
@@ -127,12 +129,56 @@ function renderCustomers() {
   $('customer-grid').innerHTML = customers.length ? customers.map((customer) => { const fields = customer.template?.fields || []; const label = fields.length ? `${fields.length} área(s) configurada(s)` : 'Sem áreas OCR'; return `<article class="customer-card"><p class="eyebrow">${escape(label)}</p><h2>${escape(customer.name)}</h2><p>${escape(customer.template?.sample_name || 'Sem PDF tipo')}</p><small>${escape(customer.email || customer.phone || 'Sem contacto registado')}</small><button class="compact secondary" data-delete-customer="${customer.id}">Remover</button></article>`; }).join('') : '<p class="empty">Ainda não existem clientes. Adiciona um PDF tipo para configurar a leitura por áreas.</p>';
   $('order-customer-select').innerHTML = ['<option value="">Detetar automaticamente</option>', ...customers.map((customer) => `<option value="${customer.id}">${escape(customer.name)}${customer.template?.fields?.length ? ' · modelo OCR' : ''}</option>`)].join('');
 }
+function orderPdfSignature(file, customerId) { return file ? [file.name, file.size, file.lastModified, customerId || ''].join(':') : ''; }
+function resetOrderPdfAnalysis() {
+  pendingOrderPdfDraft = null; pendingOrderPdfSignature = '';
+  const box = $('order-ai-analysis'); if (box) { box.classList.add('hidden'); box.innerHTML = ''; }
+  $('order-form').querySelectorAll('[data-ai-value]').forEach((field) => delete field.dataset.aiValue);
+}
+function fillOrderFieldFromAssistant(field, nextValue) {
+  if (!field || !nextValue) return;
+  const defaultPriority = field.name === 'priority' && field.value === '0' && !field.dataset.aiValue;
+  if (!field.value || field.value === field.dataset.aiValue || defaultPriority) { field.value = nextValue; field.dataset.aiValue = nextValue; }
+}
+function renderOrderPdfAnalysis(draft) {
+  const box = $('order-ai-analysis'); if (!box) return;
+  const items = Array.isArray(draft.items) ? draft.items : [];
+  const priority = ['Normal', 'Alta', 'Urgente'][Number(draft.priority) || 0];
+  const fields = [draft.customer && `Cliente: ${draft.customer}`, draft.order_number && `Referência: ${draft.order_number}`, draft.due_date && `Prazo: ${draft.due_date}`, Number(draft.priority) ? `Prioridade: ${priority}` : '', draft.ocr_used ? 'OCR aplicado' : 'Texto do PDF lido', draft.template_used ? 'Modelo de cliente aplicado' : '', draft.learning_applied ? 'Correção anterior aplicada' : ''].filter(Boolean);
+  const lines = items.slice(0, 8).map((item) => `<li><strong>${escape(item.part_code || 'Sem referência')}</strong>${item.description ? ` · ${escape(item.description)}` : ''} · ${Number(item.quantity || 0)} un.</li>`).join('');
+  const warnings = (draft.warnings || []).map((warning) => `<p class="order-ai-warning">${escape(warning)}</p>`).join('');
+  box.innerHTML = `<p class="eyebrow">ASSISTENTE DE ENCOMENDAS</p><h2>Dados preenchidos a partir do PDF</h2><div class="order-ai-summary">${fields.map((field) => `<span>${escape(field)}</span>`).join('') || '<span>Não foram encontrados campos preenchíveis.</span>'}</div>${items.length ? `<p>Peças identificadas — serão usadas para preparar o plano de produção depois de guardares.</p><ul class="order-ai-items">${lines}${items.length > 8 ? `<li>+ ${items.length - 8} peça(s)</li>` : ''}</ul>` : '<p class="order-ai-warning">Não foram encontradas linhas de peças. Preenche os campos manualmente ou configura um modelo no menu Clientes.</p>'}${warnings}`;
+  box.classList.remove('hidden');
+}
+async function analyseOrderPdf() {
+  const form = $('order-form'); const pdf = form.elements.order_pdf?.files?.[0];
+  if (!pdf) { resetOrderPdfAnalysis(); return null; }
+  const signature = orderPdfSignature(pdf, form.elements.customer_id?.value);
+  if (signature === pendingOrderPdfSignature && pendingOrderPdfDraft) return pendingOrderPdfDraft;
+  const submit = form.querySelector('[type="submit"]'); const originalLabel = submit.textContent;
+  submit.disabled = true; submit.textContent = 'A ler PDF…';
+  try {
+    const upload = new FormData(); upload.append('pdf', pdf); if (form.elements.customer_id?.value) upload.append('customer_id', form.elements.customer_id.value);
+    const draft = await api('/api/orders/import-pdf', { method: 'POST', body: upload });
+    pendingOrderPdfDraft = draft; pendingOrderPdfSignature = signature;
+    fillOrderFieldFromAssistant(form.elements.title, draft.order_number ? `Encomenda ${draft.order_number}` : pdf.name.replace(/\.pdf$/i, ''));
+    fillOrderFieldFromAssistant(form.elements.customer, draft.customer || '');
+    fillOrderFieldFromAssistant(form.elements.due_date, draft.due_date || '');
+    fillOrderFieldFromAssistant(form.elements.priority, String(Number(draft.priority) || 0));
+    const matchingCustomer = draft.customer_id || customers.find((customer) => customer.name.trim().toLocaleLowerCase('pt-PT') === String(draft.customer || '').trim().toLocaleLowerCase('pt-PT'))?.id;
+    if (matchingCustomer && (!form.elements.customer_id.value || form.elements.customer_id.value === draft.customer_id)) form.elements.customer_id.value = matchingCustomer;
+    renderOrderPdfAnalysis(draft);
+    return draft;
+  } catch (error) {
+    pendingOrderPdfDraft = null; pendingOrderPdfSignature = ''; renderOrderPdfAnalysis({ warnings: [error.message] }); throw error;
+  } finally { submit.disabled = false; submit.textContent = originalLabel; }
+}
 function renderTemplateFields() {
   const canvas = $('pdf-canvas'); canvas.querySelectorAll('.template-area').forEach((node) => node.remove());
   templateFields.forEach((field, index) => { const area = document.createElement('div'); area.className = 'template-area'; area.style.left = `${field.left}%`; area.style.top = `${field.top}%`; area.style.width = `${field.width}%`; area.style.height = `${field.height}%`; area.dataset.label = field.field; canvas.append(area); });
   $('template-fields-list').innerHTML = templateFields.length ? templateFields.map((field, index) => `<span class="template-field-chip">${escape(templateFieldLabel(field.field))}<button type="button" data-remove-template-field="${index}" aria-label="Remover área">×</button></span>`).join('') : '<span class="empty">Ainda não marcaste nenhuma área.</span>';
 }
-function templateFieldLabel(field) { return ({ customer: 'Nome do cliente', order_number: 'N.º encomenda', part_code: 'Referências', part_description: 'Descrição das peças', quantity: 'Quantidades' })[field] || field; }
+function templateFieldLabel(field) { return ({ customer: 'Nome do cliente', order_number: 'N.º encomenda', due_date: 'Prazo de entrega', priority: 'Prioridade', part_code: 'Referências', part_description: 'Descrição das peças', quantity: 'Quantidades' })[field] || field; }
 function resetTemplateForm() { templatePreview = null; templateFields = []; $('template-workspace').classList.add('hidden'); $('template-preview').removeAttribute('src'); $('template-fields-list').innerHTML = ''; }
 
 async function populateFilaments() { return []; }
@@ -159,8 +205,8 @@ document.querySelector('main.shell').insertBefore(historyView, $('files'));
 historyTab.onclick = () => { document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === historyTab)); document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view === historyView)); };
 document.addEventListener('click', async (event) => {
   const open = event.target.closest('[data-open-form]'), close = event.target.closest('[data-close-form]');
-  if (open) { $(open.dataset.openForm).classList.remove('hidden'); if (open.dataset.openForm === 'printer-form') { $('printer-form').reset(); resetPrinterFormMode(); setPrinterCatalogSelection(); } }
-  if (close) { $(close.dataset.closeForm).classList.add('hidden'); if (close.dataset.closeForm === 'customer-form') resetTemplateForm(); if (close.dataset.closeForm === 'printer-form') { $('printer-form').reset(); resetPrinterFormMode(); setPrinterCatalogSelection(); } }
+  if (open) { $(open.dataset.openForm).classList.remove('hidden'); if (open.dataset.openForm === 'printer-form') { $('printer-form').reset(); resetPrinterFormMode(); setPrinterCatalogSelection(); } if (open.dataset.openForm === 'order-form') { $('order-form').reset(); resetOrderPdfAnalysis(); } }
+  if (close) { $(close.dataset.closeForm).classList.add('hidden'); if (close.dataset.closeForm === 'customer-form') resetTemplateForm(); if (close.dataset.closeForm === 'printer-form') { $('printer-form').reset(); resetPrinterFormMode(); setPrinterCatalogSelection(); } if (close.dataset.closeForm === 'order-form') { $('order-form').reset(); resetOrderPdfAnalysis(); } }
   const removeArea = event.target.closest('[data-remove-template-field]'); if (removeArea) { templateFields.splice(Number(removeArea.dataset.removeTemplateField), 1); renderTemplateFields(); }
   if (event.target.id === 'clear-template-fields') { templateFields = []; renderTemplateFields(); }
   const discovered = event.target.closest('[data-add-discovered]'); if (discovered) { try { const printer = JSON.parse(discovered.dataset.addDiscovered); const form = $('printer-form'); form.reset(); resetPrinterFormMode(); form.querySelector('[name="name"]').value = `${printer.detected_as} ${printer.ip}`; form.querySelector('[name="ip"]').value = printer.port && Number(printer.port) !== 7125 ? `${printer.ip}:${printer.port}` : printer.ip; form.querySelector('[name="type"]').value = printer.type; form.querySelector('[name="group_name"]').value = printer.detected_as; setPrinterCatalogSelection(); form.classList.remove('hidden'); $('printer-brand').focus(); toast('Dados preenchidos. Seleciona a marca e o modelo antes de confirmar.'); } catch { toast('Não foi possível preparar esta impressora.', 'error'); } }
@@ -184,6 +230,8 @@ document.addEventListener('click', async (event) => {
   const complete = event.target.closest('[data-complete-order]'); if (complete) try { const result = await api(`/api/orders/${complete.dataset.completeOrder}/complete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); toast(result.consumed_grams ? `Concluída; ${result.consumed_grams} g descontados.` : 'Encomenda concluída.'); update(); } catch (error) { toast(error.message, 'error'); }
 });
 document.addEventListener('change', async (event) => {
+  if (event.target.matches('#order-form [name="order_pdf"]')) { try { await analyseOrderPdf(); } catch (error) { toast(error.message, 'error'); } return; }
+  if (event.target.matches('#order-customer-select') && $('order-form').elements.order_pdf?.files?.[0]) { try { await analyseOrderPdf(); } catch (error) { toast(error.message, 'error'); } return; }
   if (event.target.matches('[data-order-library-file]')) try { await api(`/api/orders/${event.target.dataset.orderLibraryFile}/library-file`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file_id: event.target.value }) }); toast(event.target.value ? 'G-code associado à encomenda.' : 'G-code removido da encomenda.'); update(); } catch (error) { toast(error.message, 'error'); }
   if (event.target.matches('[data-order-printer]')) try { const printer = latest.printers.find((item) => String(item.id) === String(event.target.value)); await api(`/api/orders/${event.target.dataset.orderPrinter}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: event.target.value || null, printer_model: printer?.model || null, status: event.target.value ? 'queued' : 'received' }) }); toast('Impressora atribuída.'); update(); } catch (error) { toast(error.message, 'error'); }
   if (event.target.matches('[data-file-order]') && event.target.files[0]) { const form = new FormData(); form.append('gcode', event.target.files[0]); const q = prompt('Quantidade de peças:', ''); const material = prompt('Material:', ''); const color = prompt('Cor:', ''); const nozzle = prompt('Bico em mm, ex.: 0.4:', ''); if (q) form.append('quantity', q); if (material) form.append('material', material); if (color) form.append('color', color); if (nozzle) form.append('nozzle', nozzle); try { const result = await api(`/api/orders/${event.target.dataset.fileOrder}/files`, { method: 'POST', body: form }); toast(result.metadata.valid ? 'G-code validado.' : `G-code guardado; falta: ${result.metadata.missing.join(', ')}.`, result.metadata.valid ? 'success' : 'error'); update(); } catch (error) { toast(error.message, 'error'); } }
@@ -204,9 +252,23 @@ for (const id of ['order-form', 'project-form', 'printer-form', 'spool-form', 'c
   try {
     if (id === 'customer-form') { if (!templatePreview) throw new Error('Seleciona uma encomenda PDF tipo.'); if (!templateFields.length) throw new Error('Marca pelo menos uma área de leitura no PDF.'); form.template = { sample_name: templatePreview.file_name, fields: templateFields }; delete form.sample_pdf; }
     if (id === 'printer-form') { if (form.model === customModelValue) form.model = String(form.custom_model || '').trim(); delete form.custom_model; if (!form.model) throw new Error('Seleciona um modelo ou indica um perfil personalizado.'); }
-    if (id === 'order-form') { const pdf = values.get('order_pdf'); delete form.order_pdf; if (pdf instanceof File && pdf.size) { const upload = new FormData(); upload.append('pdf', pdf); if (form.customer_id) upload.append('customer_id', form.customer_id); const draft = await api('/api/orders/import-pdf', { method: 'POST', body: upload }); form.title = form.title || (draft.order_number ? `Encomenda ${draft.order_number}` : pdf.name.replace(/\.pdf$/i, '')); form.customer = form.customer || draft.customer || ''; form.customer_id = draft.customer_id || form.customer_id || ''; form.items = draft.items || []; form.document = { file_name: draft.file_name, order_number: draft.order_number || null, ocr_used: Boolean(draft.ocr_used), template_used: Boolean(draft.template_used), imported_at: new Date().toISOString() }; if (draft.warnings?.length) form.notes = [form.notes, `PDF: ${draft.warnings.join(' ')}`].filter(Boolean).join('\n'); toast(draft.template_used ? 'PDF lido com o modelo do cliente.' : draft.ocr_used ? 'PDF lido por OCR.' : 'Texto do PDF lido automaticamente.'); } if (!String(form.title || '').trim()) throw new Error('Indica um nome ou seleciona um PDF com referência.'); }
+    if (id === 'order-form') {
+      const pdf = values.get('order_pdf'); delete form.order_pdf;
+      if (pdf instanceof File && pdf.size) {
+        const signature = orderPdfSignature(pdf, form.customer_id);
+        const draft = pendingOrderPdfSignature === signature && pendingOrderPdfDraft ? pendingOrderPdfDraft : await analyseOrderPdf();
+        if (!draft) throw new Error('Não foi possível analisar o PDF.');
+        form.title = form.title || (draft.order_number ? `Encomenda ${draft.order_number}` : pdf.name.replace(/\.pdf$/i, ''));
+        form.customer = form.customer || draft.customer || '';
+        form.customer_id = draft.customer_id || form.customer_id || '';
+        form.items = draft.items || [];
+        form.ai_draft = { customer: draft.customer || '', order_number: draft.order_number || '', items: draft.items || [], warnings: draft.warnings || [] };
+        form.document = { file_name: draft.file_name, order_number: draft.order_number || null, ocr_used: Boolean(draft.ocr_used), template_used: Boolean(draft.template_used), learning_applied: Boolean(draft.learning_applied), imported_at: new Date().toISOString() };
+      }
+      if (!String(form.title || '').trim()) throw new Error('Indica um nome ou seleciona um PDF com referência.');
+    }
     const result = await api(endpoint, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
-    formElement.reset(); if (id === 'printer-form') { resetPrinterFormMode(); setPrinterCatalogSelection(); } formElement.classList.add('hidden'); if (id === 'customer-form') { resetTemplateForm(); await refreshCustomers(); } if (id === 'library-part-form') await refreshFiles(); toast(id === 'customer-form' ? 'Cliente e modelo guardados.' : id === 'library-part-form' ? 'Peça criada. Agora adiciona os G-codes.' : id === 'printer-form' ? wasEditingPrinter ? 'Impressora atualizada.' : 'Impressora adicionada ao Production Hub.' : id === 'spool-form' ? 'Bobine adicionada ao inventário do portal.' : 'Registo criado.'); update();
+    formElement.reset(); if (id === 'printer-form') { resetPrinterFormMode(); setPrinterCatalogSelection(); } if (id === 'order-form') resetOrderPdfAnalysis(); formElement.classList.add('hidden'); if (id === 'customer-form') { resetTemplateForm(); await refreshCustomers(); } if (id === 'library-part-form') await refreshFiles(); toast(id === 'customer-form' ? 'Cliente e modelo guardados.' : id === 'library-part-form' ? 'Peça criada. Agora adiciona os G-codes.' : id === 'printer-form' ? wasEditingPrinter ? 'Impressora atualizada.' : 'Impressora adicionada ao Production Hub.' : id === 'spool-form' ? 'Bobine adicionada ao inventário do portal.' : result.ai_assistant?.prepared_at ? 'Encomenda criada e plano de produção preparado.' : 'Encomenda criada com os dados confirmados.'); update();
   } catch (error) { toast(error.message, 'error'); }
 });
 document.addEventListener('submit', async (event) => {
@@ -257,7 +319,7 @@ renderOrders = function renderOrdersWithPieces() {
     const items = o.items?.length ? `<span>${o.items.length} linha(s) lida(s) no PDF</span>` : '';
     const assistant = o.ai_assistant ? `<span>Assistente: ${Number(o.ai_assistant.linked?.length || 0)} preparada(s) · ${Number(o.ai_assistant.review?.length || 0)} a rever · ${Number(o.ai_assistant.unmatched?.length || 0)} sem correspondência</span>` : '';
     const printerOptions = ['<option value="">Atribuir impressora</option>', ...latest.printers.map((p) => `<option value="${p.id}" ${Number(o.printer_id) === Number(p.id) ? 'selected' : ''}>${escape(p.name)}</option>`)].join('');
-    return `<article class="order-card ${Number(o.priority) === 2 ? 'urgent' : ''}"><div class="order-top"><div><p class="eyebrow">${escape(o.id)}</p><h2>${escape(o.title)}</h2><p>${escape(o.customer || 'Sem cliente')} · ${o.due_date ? escape(o.due_date) : 'Sem prazo'}</p></div><span class="badge ${o.status === 'completed' ? 'online' : Number(o.priority) === 2 ? 'printing' : 'offline'}">${escape(o.status)}</span></div><div class="order-meta">${source}${items}${assistant}<span class="order-gcode-summary">Sem peças/G-codes associados.</span></div><div class="order-actions"><label>Impressora<select data-order-printer="${escape(o.id)}">${printerOptions}</select></label>${o.items?.length ? `<button class="compact secondary" data-ai-prepare-order="${escape(o.id)}">Preparar trabalhos IA</button>` : ''}${o.status !== 'completed' ? `<button class="compact" data-complete-order="${escape(o.id)}">Concluir</button>` : ''}</div></article>`;
+    return `<article class="order-card ${Number(o.priority) === 2 ? 'urgent' : ''}"><div class="order-top"><div><p class="eyebrow">${escape(o.id)}</p><h2>${escape(o.title)}</h2><p>${escape(o.customer || 'Sem cliente')} · ${o.due_date ? escape(o.due_date) : 'Sem prazo'}</p></div><span class="badge ${o.status === 'completed' ? 'online' : Number(o.priority) === 2 ? 'printing' : 'offline'}">${escape(o.status)}</span></div><div class="order-meta">${source}${items}${assistant}<span class="order-gcode-summary">Sem peças/G-codes associados.</span></div><div class="order-actions"><label>Impressora<select data-order-printer="${escape(o.id)}">${printerOptions}</select></label>${o.status !== 'completed' ? `<button class="compact" data-complete-order="${escape(o.id)}">Concluir</button>` : ''}</div></article>`;
   }).join('') : '<p class="empty">Não existem encomendas ativas na fila.</p>';
   renderHistory();
 };

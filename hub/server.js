@@ -29,7 +29,7 @@ app.use(express.json({ limit: '256kb' }));
 
 function emptyState() {
   return {
-    assignments: {}, consumption: [], orders: [], customers: [], files: [], library_parts: [],
+    assignments: {}, consumption: [], orders: [], customers: [], document_learning: [], files: [], library_parts: [],
     printers: [], spools: [], projects: [], parts: [], production_gcodes: [], jobs: [],
   };
 }
@@ -42,6 +42,7 @@ function migrateState(raw) {
   const value = { ...emptyState(), ...(raw && typeof raw === 'object' ? raw : {}) };
   value.files = Array.isArray(value.files) ? value.files : [];
   value.orders = Array.isArray(value.orders) ? value.orders : [];
+  value.document_learning = Array.isArray(value.document_learning) ? value.document_learning : [];
   value.library_parts = Array.isArray(value.library_parts) ? value.library_parts : [];
   value.printers = Array.isArray(value.printers) ? value.printers : [];
   value.spools = Array.isArray(value.spools) ? value.spools : [];
@@ -49,7 +50,7 @@ function migrateState(raw) {
   value.parts = Array.isArray(value.parts) ? value.parts : [];
   value.production_gcodes = Array.isArray(value.production_gcodes) ? value.production_gcodes : [];
   value.jobs = Array.isArray(value.jobs) ? value.jobs : [];
-  let changed = !Array.isArray(raw?.library_parts) || !Array.isArray(raw?.printers) || !Array.isArray(raw?.spools) || !Array.isArray(raw?.projects) || !Array.isArray(raw?.parts) || !Array.isArray(raw?.production_gcodes) || !Array.isArray(raw?.jobs);
+  let changed = !Array.isArray(raw?.document_learning) || !Array.isArray(raw?.library_parts) || !Array.isArray(raw?.printers) || !Array.isArray(raw?.spools) || !Array.isArray(raw?.projects) || !Array.isArray(raw?.parts) || !Array.isArray(raw?.production_gcodes) || !Array.isArray(raw?.jobs);
   const usedNames = new Set(value.library_parts.map((part) => libraryPartName(part.name)).filter(Boolean));
 
   for (const part of value.library_parts) {
@@ -238,8 +239,46 @@ function pdfItems(text) {
   return items.slice(0, 100);
 }
 
+function pdfIsoDate(value) {
+  const raw = clean(value, 40);
+  const iso = raw.match(/^(\d{4})[./-](\d{1,2})[./-](\d{1,2})$/);
+  const european = raw.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/);
+  const year = iso ? Number(iso[1]) : european ? Number(european[3].length === 2 ? `20${european[3]}` : european[3]) : 0;
+  const month = iso ? Number(iso[2]) : european ? Number(european[2]) : 0;
+  const day = iso ? Number(iso[3]) : european ? Number(european[1]) : 0;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return year >= 2000 && month >= 1 && month <= 12 && day >= 1 && day <= 31 && date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}` : '';
+}
+
+function pdfDueDate(text) {
+  const raw = pdfValue(text, [/(?:prazo|data\s+de\s+entrega|entrega|delivery\s*date|due\s*date|deadline)\s*[:#-]\s*(\d{1,4}[./-]\d{1,2}[./-]\d{1,4})/i]);
+  return pdfIsoDate(raw);
+}
+
+function pdfPriority(text) {
+  const value = String(text || '');
+  if (/\b(?:urgente|urgent|asap|express)\b/i.test(value)) return 2;
+  if (/\b(?:prioridade\s*alta|alta\s*prioridade|high\s*priority)\b/i.test(value)) return 1;
+  return 0;
+}
+
 function normalizedReference(value) {
   return clean(value, 500).toLocaleUpperCase('pt-PT').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9]+/g, '');
+}
+
+function applyPdfLearning(saved, draft) {
+  const detectedCustomer = normalizedReference(draft?.customer);
+  if (!detectedCustomer) return draft;
+  const learned = saved.document_learning.find((entry) => normalizedReference(entry.detected_customer) === detectedCustomer && clean(entry.confirmed_customer, 120));
+  return learned ? { ...draft, customer: learned.confirmed_customer, learning_applied: true } : draft;
+}
+
+function learnFromPdfReview(saved, draft, order) {
+  const detectedCustomer = clean(draft?.customer, 120); const confirmedCustomer = clean(order?.customer, 120);
+  if (!detectedCustomer || !confirmedCustomer || normalizedReference(detectedCustomer) === normalizedReference(confirmedCustomer)) return;
+  const existing = saved.document_learning.find((entry) => normalizedReference(entry.detected_customer) === normalizedReference(detectedCustomer));
+  const next = { detected_customer: detectedCustomer, confirmed_customer: confirmedCustomer, updated_at: new Date().toISOString(), uses: Number(existing?.uses || 0) + 1 };
+  if (existing) Object.assign(existing, next); else saved.document_learning.push({ id: crypto.randomUUID(), ...next });
 }
 
 function itemReferenceCandidates(item) {
@@ -295,11 +334,12 @@ function draftFromPdfText(text) {
   const customer = pdfValue(text, [/(?:cliente|customer|company|empresa|destinat[aÃ¡]rio)\s*(?:n[.ÂºoÂ°]*)?\s*[:#-]\s*([^\r\n]{2,120})/i]);
   const orderNumber = pdfValue(text, [/(?:n[.ÂºoÂ°]*\s*)?(?:de\s*)?(?:encomenda|order(?:\s*(?:number|no\.?))?)\s*[:#-]\s*([a-z0-9][a-z0-9./_-]{1,})/i]);
   const items = pdfItems(text);
+  const dueDate = pdfDueDate(text); const priority = pdfPriority(text);
   const warnings = [];
   if (!customer) warnings.push('Cliente nÃ£o identificado automaticamente.');
   if (!orderNumber) warnings.push('NÃºmero de encomenda nÃ£o identificado automaticamente.');
   if (!items.length) warnings.push('NÃ£o foram identificadas referÃªncias e quantidades; confirme manualmente.');
-  return { customer, order_number: orderNumber, items, warnings };
+  return { customer, order_number: orderNumber, due_date: dueDate, priority, items, warnings };
 }
 
 async function extractPdfOrder(pdf) {
@@ -340,7 +380,7 @@ async function renderPdfFirstPage(pdf, directory) {
 
 function templateFields(value) {
   if (!Array.isArray(value)) return [];
-  const allowed = new Set(['customer', 'order_number', 'part_code', 'part_description', 'quantity']);
+  const allowed = new Set(['customer', 'order_number', 'due_date', 'priority', 'part_code', 'part_description', 'quantity']);
   return value.filter((field) => allowed.has(field?.field)).map((field) => ({
     field: field.field,
     left: Math.max(0, Math.min(99.9, Number(field.left) || 0)),
@@ -377,6 +417,8 @@ async function extractWithCustomerTemplate(pdf, customer) {
     return {
       customer: customer.name,
       order_number: clean(values.order_number, 120),
+      due_date: pdfIsoDate(values.due_date),
+      priority: pdfPriority(values.priority),
       items,
       warnings: items.length ? [] : ['O modelo do cliente não identificou referências e quantidades; confirme manualmente.'],
       ocr_used: true,
@@ -703,12 +745,14 @@ app.post('/api/orders/import-pdf', pdfUpload.single('pdf'), async (req, res) => 
   try {
     const saved = state(); const customer = clean(req.body?.customer_id, 80) ? getCustomer(saved, req.body.customer_id) : null;
     if (req.body?.customer_id && !customer) return res.status(404).json({ error: 'Cliente não encontrado.' });
-    const generic = await extractPdfOrder(req.file.buffer);
+    const generic = applyPdfLearning(saved, await extractPdfOrder(req.file.buffer));
     const templated = customer ? await extractWithCustomerTemplate(req.file.buffer, customer) : null;
     const draft = templated ? {
       ...generic,
       customer: customer.name,
       order_number: templated.order_number || generic.order_number,
+      due_date: templated.due_date || generic.due_date,
+      priority: Math.max(Number(generic.priority) || 0, Number(templated.priority) || 0),
       items: templated.items.length ? templated.items : generic.items,
       warnings: [...new Set([...(generic.warnings || []), ...(templated.warnings || [])])],
       ocr_used: Boolean(generic.ocr_used || templated.ocr_used),
@@ -721,7 +765,11 @@ app.post('/api/orders/import-pdf', pdfUpload.single('pdf'), async (req, res) => 
 });
 app.post('/api/orders', (req, res) => {
   if (!clean(req.body?.title, 120)) return res.status(400).json({ error: 'O nome da encomenda é obrigatório.' });
-  const saved = state(); const customer = clean(req.body?.customer_id, 80) ? getCustomer(saved, req.body.customer_id) : null; const item = { id: orderId(), title: clean(req.body.title, 120), customer_id: customer?.id || null, customer: customer?.name || clean(req.body.customer, 120), due_date: clean(req.body.due_date, 20) || null, priority: Math.min(2, Math.max(0, Number(req.body.priority) || 0)), notes: clean(req.body.notes, 1000), status: 'received', printer_id: null, files: [], library_files: [], library_parts: [], items: Array.isArray(req.body.items) ? req.body.items.slice(0, 100) : [], document: req.body.document || null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+  const saved = state(); const customer = clean(req.body?.customer_id, 80) ? getCustomer(saved, req.body.customer_id) : null; const aiDraft = req.body?.ai_draft && typeof req.body.ai_draft === 'object' ? req.body.ai_draft : null; const item = { id: orderId(), title: clean(req.body.title, 120), customer_id: customer?.id || null, customer: customer?.name || clean(req.body.customer, 120), due_date: clean(req.body.due_date, 20) || null, priority: Math.min(2, Math.max(0, Number(req.body.priority) || 0)), notes: clean(req.body.notes, 1000), status: 'received', printer_id: null, files: [], library_files: [], library_parts: [], items: Array.isArray(req.body.items) ? req.body.items.slice(0, 100) : [], document: req.body.document || null, ai_assistant: aiDraft ? { source: 'local-pdf-assistant', reviewed_at: new Date().toISOString(), extracted_items: Array.isArray(aiDraft.items) ? aiDraft.items.length : 0, warnings: Array.isArray(aiDraft.warnings) ? aiDraft.warnings.slice(0, 10) : [] } : null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+  if (aiDraft) {
+    learnFromPdfReview(saved, aiDraft, item);
+    if (item.items.length) prepareOrderWithPdfAssistant(saved, item);
+  }
   saved.orders.unshift(item); save(saved); res.status(201).json(item);
 });
 app.patch('/api/orders/:id', (req, res) => {
