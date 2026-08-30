@@ -14,6 +14,9 @@ projetos, fila de produção, encomendas, clientes, bobines e OCR de documentos.
 - Bobines, atribuições às impressoras e registo de consumo no próprio portal.
 - Leitura de PDFs por texto e OCR local em português e inglês; modelos de PDF por
   cliente para leitura por áreas.
+- Análise opcional pela API OpenAI: envia o PDF apenas quando `OPENAI_API_KEY`
+  estiver configurada, devolve campos estruturados e mantém o OCR local como
+  alternativa se a API não estiver disponível.
 
 Não requer Print Farm Manager nem Spoolman para funcionar. Os serviços antigos
 podem continuar instalados durante a migração, mas não são consultados nem
@@ -31,6 +34,22 @@ Abra `http://IP-DO-SERVIDOR:8080`.
 Todos os dados persistem no volume Docker `hub-data`, montado em `/app/data`
 dentro do contentor. Nunca use `docker compose down -v` num servidor com dados
 de produção.
+
+## IA OpenAI para encomendas (opcional)
+
+O portal já extrai texto e faz OCR localmente. Para uma leitura mais robusta de
+tabelas, referências e instruções, adicione uma chave de API OpenAI ao ficheiro
+`.env` do servidor:
+
+```dotenv
+OPENAI_API_KEY=cole-a-chave-da-api-aqui
+OPENAI_MODEL=gpt-5-mini
+```
+
+Depois reconstrua o contentor. Ao selecionar um PDF, o portal envia-o à API
+OpenAI, preenche os dados que conseguir confirmar e assinala a origem como
+`IA OpenAI`. Sem chave — ou se a API falhar — continua a usar apenas a leitura
+local. A chave não é exposta ao navegador nem é guardada nos dados do portal.
 
 ## Atualização
 

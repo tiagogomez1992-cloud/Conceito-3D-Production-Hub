@@ -144,9 +144,10 @@ function renderOrderPdfAnalysis(draft) {
   const box = $('order-ai-analysis'); if (!box) return;
   const items = Array.isArray(draft.items) ? draft.items : [];
   const priority = ['Normal', 'Alta', 'Urgente'][Number(draft.priority) || 0];
-  const fields = [draft.customer && `Cliente: ${draft.customer}`, draft.order_number && `Referência: ${draft.order_number}`, draft.due_date && `Prazo: ${draft.due_date}`, Number(draft.priority) ? `Prioridade: ${priority}` : '', draft.ocr_used ? 'OCR aplicado' : 'Texto do PDF lido', draft.template_used ? 'Modelo de cliente aplicado' : '', draft.learning_applied ? 'Correção anterior aplicada' : ''].filter(Boolean);
+  const source = draft.ai_provider === 'openai' ? `ChatGPT · ${draft.ai_model || 'modelo configurado'}` : (draft.ocr_used ? 'OCR local aplicado' : 'Texto do PDF lido localmente');
+  const fields = [draft.customer && `Cliente: ${draft.customer}`, draft.order_number && `Referência: ${draft.order_number}`, draft.due_date && `Prazo: ${draft.due_date}`, Number(draft.priority) ? `Prioridade: ${priority}` : '', source, draft.template_used ? 'Modelo de cliente aplicado' : '', draft.learning_applied ? 'Correção anterior aplicada' : ''].filter(Boolean);
   const lines = items.slice(0, 8).map((item) => `<li><strong>${escape(item.part_code || 'Sem referência')}</strong>${item.description ? ` · ${escape(item.description)}` : ''} · ${Number(item.quantity || 0)} un.</li>`).join('');
-  const warnings = (draft.warnings || []).map((warning) => `<p class="order-ai-warning">${escape(warning)}</p>`).join('');
+  const warnings = [...(draft.warnings || []), ...(draft.ai_warning ? [draft.ai_warning] : [])].map((warning) => `<p class="order-ai-warning">${escape(warning)}</p>`).join('');
   box.innerHTML = `<p class="eyebrow">ASSISTENTE DE ENCOMENDAS</p><h2>Dados preenchidos a partir do PDF</h2><div class="order-ai-summary">${fields.map((field) => `<span>${escape(field)}</span>`).join('') || '<span>Não foram encontrados campos preenchíveis.</span>'}</div>${items.length ? `<p>Peças identificadas — serão usadas para preparar o plano de produção depois de guardares.</p><ul class="order-ai-items">${lines}${items.length > 8 ? `<li>+ ${items.length - 8} peça(s)</li>` : ''}</ul>` : '<p class="order-ai-warning">Não foram encontradas linhas de peças. Preenche os campos manualmente ou configura um modelo no menu Clientes.</p>'}${warnings}`;
   box.classList.remove('hidden');
 }
@@ -165,6 +166,7 @@ async function analyseOrderPdf() {
     fillOrderFieldFromAssistant(form.elements.customer, draft.customer || '');
     fillOrderFieldFromAssistant(form.elements.due_date, draft.due_date || '');
     fillOrderFieldFromAssistant(form.elements.priority, String(Number(draft.priority) || 0));
+    fillOrderFieldFromAssistant(form.elements.notes, draft.notes || '');
     const matchingCustomer = draft.customer_id || customers.find((customer) => customer.name.trim().toLocaleLowerCase('pt-PT') === String(draft.customer || '').trim().toLocaleLowerCase('pt-PT'))?.id;
     if (matchingCustomer && (!form.elements.customer_id.value || form.elements.customer_id.value === draft.customer_id)) form.elements.customer_id.value = matchingCustomer;
     renderOrderPdfAnalysis(draft);
