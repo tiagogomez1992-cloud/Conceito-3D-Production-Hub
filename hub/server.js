@@ -311,6 +311,72 @@ function libraryPartMatch(saved, item) {
   return { ...best, ambiguous: Boolean(next && best.score < 1 && best.score - next.score < 0.1), alternatives: scored.slice(1, 3).map((entry) => ({ part_id: entry.part.id, part_name: entry.part.name, confidence: Math.round(entry.score * 100) })) };
 }
 
+function normalizedOrderItems(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 100).map((entry) => ({
+    part_code: clean(entry?.part_code, 160),
+    description: clean(entry?.description, 500),
+    quantity: Math.max(1, Math.floor(Number(entry?.quantity) || 1)),
+  })).filter((entry) => entry.part_code || entry.description);
+}
+
+function draftLineFromPdfItem(saved, source, options = {}) {
+  const item = { part_code: clean(source?.part_code, 160), description: clean(source?.description, 500), quantity: Math.max(1, Math.floor(Number(source?.quantity) || 1)) };
+  const match = libraryPartMatch(saved, item);
+  const exact = Boolean(match && match.score >= 1 && !match.ambiguous);
+  return {
+    id: crypto.randomUUID(),
+    ...item,
+    origin: options.origin || 'pdf',
+    review_status: options.review_status || 'pending',
+    match_status: options.match_status || (!match ? 'missing' : exact ? 'exact' : 'possible'),
+    suggested_part_id: match?.part?.id || null,
+    suggested_part_name: match?.part?.name || '',
+    confidence: match ? Math.round(match.score * 100) : 0,
+    alternatives: match?.alternatives || [],
+    library_part_id: options.library_part_id || null,
+  };
+}
+
+function pdfDraftLines(saved, items) {
+  return normalizedOrderItems(items).map((item) => draftLineFromPdfItem(saved, item));
+}
+
+function publicDraftValidation(lines) {
+  return lines.map((line) => ({
+    part_code: line.part_code,
+    description: line.description,
+    quantity: line.quantity,
+    match_status: line.match_status,
+    suggested_part_id: line.suggested_part_id,
+    suggested_part_name: line.suggested_part_name,
+    confidence: line.confidence,
+    alternatives: line.alternatives,
+  }));
+}
+
+function confirmedDraftPartPlan(saved, order) {
+  const lines = Array.isArray(order.draft_lines) ? order.draft_lines : [];
+  if (!lines.length) return { error: 'Adiciona pelo menos uma linha de peça ao rascunho.' };
+  const waiting = lines.filter((line) => line.review_status !== 'confirmed' || !line.library_part_id);
+  if (waiting.length) return { error: `${waiting.length} linha(s) ainda precisam de validação na biblioteca.` };
+  const links = new Map();
+  for (const line of lines) {
+    const part = getLibraryPart(saved, line.library_part_id);
+    if (!part) return { error: `A peça validada “${line.part_code || line.description}” já não existe na biblioteca.` };
+    if (!libraryPartFiles(saved, part.id, true).length) return { error: `A peça “${part.name}” não tem um G-code ativo na biblioteca.` };
+    const previous = links.get(part.id);
+    links.set(part.id, {
+      part_id: part.id,
+      requested_quantity: Number(previous?.requested_quantity || 0) + Math.max(1, Number(line.quantity || 1)),
+      selected_file_id: previous?.selected_file_id || null,
+      source: 'pdf-review',
+      source_reference: clean(line.part_code || line.description, 160),
+    });
+  }
+  return { links: [...links.values()] };
+}
+
 function prepareOrderWithPdfAssistant(saved, order) {
   const sourceItems = Array.isArray(order.items) ? order.items.filter((item) => Number(item?.quantity) > 0) : [];
   const existing = Array.isArray(order.library_parts) ? order.library_parts : [];
@@ -950,18 +1016,33 @@ app.post('/api/orders/import-pdf', pdfUpload.single('pdf'), async (req, res) => 
       ocr_used: Boolean(generic.ocr_used || templated.ocr_used),
       template_used: true,
     } : { ...generic, ...(customer ? { customer: customer.name, template_used: false } : {}) };
-    res.json({ file_name: clean(req.file.originalname, 255), customer_id: customer?.id || null, ...draft });
+    const draftLines = pdfDraftLines(saved, draft.items);
+    res.json({ file_name: clean(req.file.originalname, 255), customer_id: customer?.id || null, ...draft, item_validation: publicDraftValidation(draftLines), review_step: 'draft' });
   } catch (error) {
     res.status(422).json({ error: `NÃ£o foi possÃ­vel ler o PDF: ${error.message || 'erro desconhecido'}` });
   }
 });
 app.post('/api/orders', (req, res) => {
   if (!clean(req.body?.title, 120)) return res.status(400).json({ error: 'O nome da encomenda é obrigatório.' });
-  const saved = state(); const customer = clean(req.body?.customer_id, 80) ? getCustomer(saved, req.body.customer_id) : null; const aiDraft = req.body?.ai_draft && typeof req.body.ai_draft === 'object' ? req.body.ai_draft : null; const item = { id: orderId(), title: clean(req.body.title, 120), customer_id: customer?.id || null, customer: customer?.name || clean(req.body.customer, 120), due_date: clean(req.body.due_date, 20) || null, priority: Math.min(2, Math.max(0, Number(req.body.priority) || 0)), notes: clean(req.body.notes, 1000), status: 'received', printer_id: null, files: [], library_files: [], library_parts: [], items: Array.isArray(req.body.items) ? req.body.items.slice(0, 100) : [], document: req.body.document || null, ai_assistant: aiDraft ? { source: aiDraft.ai_provider === 'openai' ? 'openai-pdf-assistant' : aiDraft.ai_provider === 'ollama' ? 'ollama-pdf-assistant' : 'local-pdf-assistant', model: ['openai', 'ollama'].includes(aiDraft.ai_provider) ? clean(aiDraft.ai_model, 120) : null, reviewed_at: new Date().toISOString(), extracted_items: Array.isArray(aiDraft.items) ? aiDraft.items.length : 0, warnings: Array.isArray(aiDraft.warnings) ? aiDraft.warnings.slice(0, 10) : [] } : null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
-  if (aiDraft) {
-    learnFromPdfReview(saved, aiDraft, item);
-    if (item.items.length) prepareOrderWithPdfAssistant(saved, item);
-  }
+  const saved = state(); const customer = clean(req.body?.customer_id, 80) ? getCustomer(saved, req.body.customer_id) : null;
+  const aiDraft = req.body?.ai_draft && typeof req.body.ai_draft === 'object' ? req.body.ai_draft : null;
+  const extractedItems = normalizedOrderItems(req.body?.items);
+  const requiresReview = Boolean(aiDraft || req.body?.document);
+  const now = new Date().toISOString();
+  const item = {
+    id: orderId(), title: clean(req.body.title, 120), customer_id: customer?.id || null,
+    customer: customer?.name || clean(req.body.customer, 120), due_date: clean(req.body.due_date, 20) || null,
+    priority: Math.min(2, Math.max(0, Number(req.body.priority) || 0)), notes: clean(req.body.notes, 1000),
+    status: requiresReview ? 'draft' : 'received', printer_id: null, files: [], library_files: [], library_parts: [],
+    items: extractedItems, draft_lines: requiresReview ? pdfDraftLines(saved, extractedItems) : [], document: req.body.document || null,
+    ai_assistant: aiDraft ? {
+      source: aiDraft.ai_provider === 'openai' ? 'openai-pdf-assistant' : aiDraft.ai_provider === 'ollama' ? 'ollama-pdf-assistant' : 'local-pdf-assistant',
+      model: ['openai', 'ollama'].includes(aiDraft.ai_provider) ? clean(aiDraft.ai_model, 120) : null,
+      extracted_at: now, extracted_items: extractedItems.length, warnings: Array.isArray(aiDraft.warnings) ? aiDraft.warnings.slice(0, 10) : [],
+    } : null,
+    created_at: now, updated_at: now,
+  };
+  if (aiDraft) learnFromPdfReview(saved, aiDraft, item);
   saved.orders.unshift(item); save(saved); res.status(201).json(item);
 });
 app.patch('/api/orders/:id', (req, res) => {
@@ -980,9 +1061,71 @@ app.post('/api/orders/:id/ai-prepare-production', (req, res) => {
   const saved = state(); const item = getOrder(saved, req.params.id);
   if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
   if (!Array.isArray(item.items) || !item.items.length) return res.status(409).json({ error: 'Esta encomenda ainda não tem referências e quantidades extraídas do PDF.' });
-  const result = prepareOrderWithPdfAssistant(saved, item);
+  item.draft_lines = pdfDraftLines(saved, item.items);
+  item.status = 'draft';
   item.updated_at = new Date().toISOString(); save(saved);
-  res.json({ order: item, ...result, message: `${result.linked.length} peça(s) preparada(s), ${result.review.length} para rever e ${result.unmatched.length} sem correspondência.` });
+  res.json({ order: item, validation: publicDraftValidation(item.draft_lines), message: 'Rascunho preparado para validação; nenhuma peça foi enviada para produção.' });
+});
+app.post('/api/orders/:id/draft-lines', (req, res) => {
+  const saved = state(); const item = getOrder(saved, req.params.id);
+  if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
+  if (item.status !== 'draft') return res.status(409).json({ error: 'Só podes alterar linhas enquanto a encomenda está em rascunho.' });
+  const part = getLibraryPart(saved, clean(req.body?.library_part_id, 80));
+  const quantity = Math.floor(Number(req.body?.quantity));
+  if (!part) return res.status(404).json({ error: 'Seleciona uma peça existente na biblioteca.' });
+  if (!Number.isInteger(quantity) || quantity < 1) return res.status(400).json({ error: 'Indica uma quantidade válida.' });
+  item.draft_lines = Array.isArray(item.draft_lines) ? item.draft_lines : [];
+  item.draft_lines.push(draftLineFromPdfItem(saved, { part_code: part.name, description: part.description, quantity }, { origin: 'manual', review_status: 'confirmed', match_status: 'manual', library_part_id: part.id }));
+  item.items = item.draft_lines.map((line) => ({ part_code: line.part_code, description: line.description, quantity: line.quantity }));
+  item.updated_at = new Date().toISOString(); save(saved); res.status(201).json(item);
+});
+app.patch('/api/orders/:id/draft-lines/:lineId', (req, res) => {
+  const saved = state(); const item = getOrder(saved, req.params.id);
+  if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
+  if (item.status !== 'draft') return res.status(409).json({ error: 'Só podes alterar linhas enquanto a encomenda está em rascunho.' });
+  const line = (item.draft_lines || []).find((entry) => entry.id === req.params.lineId);
+  if (!line) return res.status(404).json({ error: 'Linha de rascunho não encontrada.' });
+  if (req.body?.part_code !== undefined) line.part_code = clean(req.body.part_code, 160);
+  if (req.body?.description !== undefined) line.description = clean(req.body.description, 500);
+  if (req.body?.quantity !== undefined) {
+    const quantity = Math.floor(Number(req.body.quantity));
+    if (!Number.isInteger(quantity) || quantity < 1) return res.status(400).json({ error: 'Indica uma quantidade válida.' });
+    line.quantity = quantity;
+  }
+  const partId = clean(req.body?.library_part_id, 80);
+  if (partId) {
+    const part = getLibraryPart(saved, partId);
+    if (!part) return res.status(404).json({ error: 'A peça selecionada já não existe na biblioteca.' });
+    line.library_part_id = part.id; line.review_status = 'confirmed'; line.match_status = 'confirmed';
+    line.suggested_part_id = part.id; line.suggested_part_name = part.name; line.confidence = 100;
+  } else {
+    const refreshed = draftLineFromPdfItem(saved, line, { origin: line.origin, review_status: 'pending' });
+    Object.assign(line, refreshed, { id: line.id, library_part_id: null });
+  }
+  item.items = item.draft_lines.map((entry) => ({ part_code: entry.part_code, description: entry.description, quantity: entry.quantity }));
+  item.updated_at = new Date().toISOString(); save(saved); res.json(item);
+});
+app.delete('/api/orders/:id/draft-lines/:lineId', (req, res) => {
+  const saved = state(); const item = getOrder(saved, req.params.id);
+  if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
+  if (item.status !== 'draft') return res.status(409).json({ error: 'Só podes alterar linhas enquanto a encomenda está em rascunho.' });
+  const before = Array.isArray(item.draft_lines) ? item.draft_lines : [];
+  item.draft_lines = before.filter((line) => line.id !== req.params.lineId);
+  if (before.length === item.draft_lines.length) return res.status(404).json({ error: 'Linha de rascunho não encontrada.' });
+  item.items = item.draft_lines.map((line) => ({ part_code: line.part_code, description: line.description, quantity: line.quantity }));
+  item.updated_at = new Date().toISOString(); save(saved); res.status(204).end();
+});
+app.post('/api/orders/:id/approve-draft', (req, res) => {
+  const saved = state(); const item = getOrder(saved, req.params.id);
+  if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
+  if (item.status !== 'draft') return res.status(409).json({ error: 'Esta encomenda já foi aprovada para produção.' });
+  const result = confirmedDraftPartPlan(saved, item);
+  if (result.error) return res.status(409).json({ error: result.error });
+  item.library_parts = result.links;
+  item.items = item.draft_lines.map((line) => ({ part_code: line.part_code, description: line.description, quantity: line.quantity }));
+  item.status = 'received'; item.draft_reviewed_at = new Date().toISOString(); item.updated_at = item.draft_reviewed_at;
+  item.ai_assistant = item.ai_assistant ? { ...item.ai_assistant, reviewed_at: item.draft_reviewed_at, validated_items: item.draft_lines.length } : item.ai_assistant;
+  save(saved); res.json({ order: item, plan: orderGcodePlan(saved, item) });
 });
 app.post('/api/orders/:id/library-file', (req, res) => {
   const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });

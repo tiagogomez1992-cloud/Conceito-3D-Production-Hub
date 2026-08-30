@@ -152,6 +152,12 @@ function fillOrderFieldFromAssistant(field, nextValue) {
   const defaultPriority = field.name === 'priority' && field.value === '0' && !field.dataset.aiValue;
   if (!field.value || field.value === field.dataset.aiValue || defaultPriority) { field.value = nextValue; field.dataset.aiValue = nextValue; }
 }
+function draftMatchLabel(status) {
+  return ({ exact: 'Encontrada na biblioteca', possible: 'Possível correspondência', missing: 'Sem correspondência', confirmed: 'Confirmada', manual: 'Adicionada manualmente' })[status] || 'Por validar';
+}
+function draftMatchClass(status) {
+  return ['exact', 'confirmed', 'manual'].includes(status) ? 'matched' : status === 'possible' ? 'review' : 'missing';
+}
 function renderOrderPdfAnalysis(draft) {
   const box = $('order-ai-analysis'); if (!box) return;
   const items = Array.isArray(draft.items) ? draft.items : [];
@@ -159,8 +165,10 @@ function renderOrderPdfAnalysis(draft) {
   const source = draft.ai_provider === 'ollama' ? `IA local · ${draft.ai_model || 'modelo configurado'}` : draft.ai_provider === 'openai' ? `ChatGPT · ${draft.ai_model || 'modelo configurado'}` : (draft.ocr_used ? 'OCR local aplicado' : 'Texto do PDF lido localmente');
   const fields = [draft.customer && `Cliente: ${draft.customer}`, draft.order_number && `Referência: ${draft.order_number}`, draft.due_date && `Prazo: ${draft.due_date}`, Number(draft.priority) ? `Prioridade: ${priority}` : '', source, draft.template_used ? 'Modelo de cliente aplicado' : '', draft.learning_applied ? 'Correção anterior aplicada' : ''].filter(Boolean);
   const lines = items.slice(0, 8).map((item) => `<li><strong>${escape(item.part_code || 'Sem referência')}</strong>${item.description ? ` · ${escape(item.description)}` : ''} · ${Number(item.quantity || 0)} un.</li>`).join('');
+  const validation = Array.isArray(draft.item_validation) ? draft.item_validation : [];
+  const validationRows = validation.length ? `<div class="pdf-validation-list">${validation.map((line) => `<div class="pdf-validation-row ${draftMatchClass(line.match_status)}"><div><strong>${escape(line.part_code || line.description || 'Linha sem referência')}</strong><small>${line.suggested_part_name ? `Biblioteca: ${escape(line.suggested_part_name)}` : 'Não existe ainda uma peça correspondente na biblioteca'}</small></div><span>${escape(draftMatchLabel(line.match_status))}</span></div>`).join('')}</div>` : '';
   const warnings = [...(draft.warnings || []), ...(draft.ai_warning ? [draft.ai_warning] : [])].map((warning) => `<p class="order-ai-warning">${escape(warning)}</p>`).join('');
-  box.innerHTML = `<p class="eyebrow">ASSISTENTE DE ENCOMENDAS</p><h2>Dados preenchidos a partir do PDF</h2><div class="order-ai-summary">${fields.map((field) => `<span>${escape(field)}</span>`).join('') || '<span>Não foram encontrados campos preenchíveis.</span>'}</div>${items.length ? `<p>Peças identificadas — serão usadas para preparar o plano de produção depois de guardares.</p><ul class="order-ai-items">${lines}${items.length > 8 ? `<li>+ ${items.length - 8} peça(s)</li>` : ''}</ul>` : '<p class="order-ai-warning">Não foram encontradas linhas de peças. Preenche os campos manualmente ou configura um modelo no menu Clientes.</p>'}${warnings}`;
+  box.innerHTML = `<p class="eyebrow">ASSISTENTE DE ENCOMENDAS</p><h2>Dados preenchidos a partir do PDF</h2><div class="order-ai-summary">${fields.map((field) => `<span>${escape(field)}</span>`).join('') || '<span>Não foram encontrados campos preenchíveis.</span>'}</div>${items.length ? `<p>As peças serão criadas como <strong>rascunho</strong>. Confirma, altera ou acrescenta linhas antes de enviar para fabrico.</p><ul class="order-ai-items">${lines}${items.length > 8 ? `<li>+ ${items.length - 8} peça(s)</li>` : ''}</ul>${validationRows}` : '<p class="order-ai-warning">Não foram encontradas linhas de peças. O rascunho permite adicioná-las manualmente depois de criares a encomenda.</p>'}${warnings}`;
   box.classList.remove('hidden');
 }
 async function analyseOrderPdf() {
@@ -348,13 +356,13 @@ for (const id of ['order-form', 'project-form', 'printer-form', 'spool-form', 'c
         form.customer = form.customer || draft.customer || '';
         form.customer_id = draft.customer_id || form.customer_id || '';
         form.items = draft.items || [];
-        form.ai_draft = { customer: draft.customer || '', order_number: draft.order_number || '', items: draft.items || [], warnings: draft.warnings || [] };
+        form.ai_draft = { customer: draft.customer || '', order_number: draft.order_number || '', items: draft.items || [], warnings: draft.warnings || [], ai_provider: draft.ai_provider || '', ai_model: draft.ai_model || '' };
         form.document = { file_name: draft.file_name, order_number: draft.order_number || null, ocr_used: Boolean(draft.ocr_used), template_used: Boolean(draft.template_used), learning_applied: Boolean(draft.learning_applied), imported_at: new Date().toISOString() };
       }
       if (!String(form.title || '').trim()) throw new Error('Indica um nome ou seleciona um PDF com referência.');
     }
     const result = await api(endpoint, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
-    formElement.reset(); if (id === 'printer-form') { resetPrinterFormMode(); setPrinterCatalogSelection(); } if (id === 'order-form') resetOrderPdfAnalysis(); formElement.classList.add('hidden'); if (id === 'customer-form') { resetTemplateForm(); await refreshCustomers(); } if (id === 'library-part-form') await refreshFiles(); toast(id === 'customer-form' ? 'Cliente e modelo guardados.' : id === 'library-part-form' ? 'Peça criada. Agora adiciona os G-codes.' : id === 'printer-form' ? wasEditingPrinter ? 'Impressora atualizada.' : 'Impressora adicionada ao Production Hub.' : id === 'spool-form' ? 'Bobine adicionada ao inventário do portal.' : result.ai_assistant?.prepared_at ? 'Encomenda criada e plano de produção preparado.' : 'Encomenda criada com os dados confirmados.'); update();
+    formElement.reset(); if (id === 'printer-form') { resetPrinterFormMode(); setPrinterCatalogSelection(); } if (id === 'order-form') resetOrderPdfAnalysis(); formElement.classList.add('hidden'); if (id === 'customer-form') { resetTemplateForm(); await refreshCustomers(); } if (id === 'library-part-form') await refreshFiles(); toast(id === 'customer-form' ? 'Cliente e modelo guardados.' : id === 'library-part-form' ? 'Peça criada. Agora adiciona os G-codes.' : id === 'printer-form' ? wasEditingPrinter ? 'Impressora atualizada.' : 'Impressora adicionada ao Production Hub.' : id === 'spool-form' ? 'Bobine adicionada ao inventário do portal.' : result.status === 'draft' ? 'Rascunho criado. Valida as peças antes de enviar para produção.' : 'Encomenda criada com os dados confirmados.'); update();
   } catch (error) { toast(error.message, 'error'); }
 });
 document.addEventListener('submit', async (event) => {
@@ -396,16 +404,31 @@ function orderPartLinks(order) {
     return { ...link, part, file, variants, requested, piecesPerRun, runs, produced: runs * piecesPerRun, excess: runs * piecesPerRun - requested };
   });
 }
+function draftReviewMarkup(order) {
+  const lines = Array.isArray(order.draft_lines) ? order.draft_lines : [];
+  const rows = lines.length ? lines.map((line) => {
+    const selected = line.library_part_id || line.suggested_part_id || '';
+    const options = ['<option value="">Escolher peça da biblioteca</option>', ...libraryParts.map((part) => `<option value="${escape(part.id)}" ${part.id === selected ? 'selected' : ''}>${escape(part.name)}${part.gcodes?.some((file) => file.active !== false) ? '' : ' · sem G-code ativo'}</option>`)].join('');
+    const confirmed = line.review_status === 'confirmed';
+    return `<article class="draft-line ${draftMatchClass(confirmed ? 'confirmed' : line.match_status)}" data-draft-line="${escape(line.id)}"><header><div><span class="draft-line-state">${escape(confirmed ? 'Validada' : draftMatchLabel(line.match_status))}</span><small>${line.suggested_part_name ? `Sugestão: ${escape(line.suggested_part_name)}${line.confidence ? ` · ${line.confidence}%` : ''}` : 'Sem referência correspondente na biblioteca'}</small></div><button class="compact danger" type="button" data-remove-draft-line="${escape(line.id)}" data-order-draft="${escape(order.id)}">Retirar</button></header><div class="draft-line-fields"><label>Referência<input name="part_code" value="${escape(line.part_code || '')}" placeholder="Referência da peça"></label><label>Descrição<input name="description" value="${escape(line.description || '')}" placeholder="Descrição"></label><label>Quantidade<input name="quantity" type="number" min="1" step="1" value="${Math.max(1, Number(line.quantity || 1))}"></label><label class="wide">Peça da biblioteca<select name="library_part_id">${options}</select></label><button class="compact" type="button" data-save-draft-line="${escape(line.id)}" data-order-draft="${escape(order.id)}">${confirmed ? 'Guardar linha' : 'Confirmar linha'}</button></div></article>`;
+  }).join('') : '<p class="empty">O PDF não criou linhas. Adiciona a primeira peça manualmente.</p>';
+  const addOptions = ['<option value="">Selecionar peça da biblioteca</option>', ...libraryParts.map((part) => `<option value="${escape(part.id)}">${escape(part.name)}${part.gcodes?.some((file) => file.active !== false) ? '' : ' · sem G-code ativo'}</option>`)].join('');
+  const pending = lines.filter((line) => line.review_status !== 'confirmed').length;
+  return `<div class="order-file-links draft-review"><div class="draft-review-heading"><div><strong>Rascunho · validação de peças</strong><small>${pending ? `${pending} linha(s) por confirmar. A encomenda não entra na produção antes desta validação.` : 'Todas as linhas foram confirmadas. Podes enviar para produção.'}</small></div><span class="badge draft">${pending ? `${pending} por validar` : 'pronto a aprovar'}</span></div><div class="draft-line-list">${rows}</div><div class="draft-add"><label>Adicionar peça da biblioteca<select data-draft-add-part="${escape(order.id)}">${addOptions}</select></label><label>Quantidade<input type="number" min="1" step="1" value="1" data-draft-add-quantity="${escape(order.id)}"></label><button class="compact secondary" type="button" data-add-draft-line="${escape(order.id)}">Adicionar linha</button></div><button class="compact draft-approve" type="button" data-approve-draft="${escape(order.id)}" ${pending ? 'disabled title="Confirma todas as linhas antes de enviar para produção"' : ''}>Validar peças e enviar para produção</button></div>`;
+}
 renderOrders = function renderOrdersWithPieces() {
   $('orders-total').textContent = latest.orders.filter((o) => o.status !== 'completed').length;
   $('orders-urgent').textContent = `${latest.orders.filter((o) => Number(o.priority) === 2 && o.status !== 'completed').length} urgentes`;
   const activeOrders = latest.orders.filter((o) => o.status !== 'completed');
   $('order-board').innerHTML = activeOrders.length ? activeOrders.map((o) => {
+    const isDraft = o.status === 'draft';
     const source = o.document?.file_name ? `<span>PDF: ${escape(o.document.file_name)}${o.document.ocr_used ? ' · OCR' : ''}</span>` : '';
-    const items = o.items?.length ? `<span>${o.items.length} linha(s) lida(s) no PDF</span>` : '';
-    const assistant = o.ai_assistant ? `<span>Assistente: ${Number(o.ai_assistant.linked?.length || 0)} preparada(s) · ${Number(o.ai_assistant.review?.length || 0)} a rever · ${Number(o.ai_assistant.unmatched?.length || 0)} sem correspondência</span>` : '';
+    const items = o.items?.length ? `<span>${o.items.length} linha(s) ${isDraft ? 'no rascunho' : 'lida(s) no PDF'}</span>` : '';
+    const pending = (o.draft_lines || []).filter((line) => line.review_status !== 'confirmed').length;
+    const assistant = o.ai_assistant ? `<span>${isDraft ? `Rascunho: ${pending} linha(s) por validar` : `Assistente: ${Number(o.ai_assistant.validated_items || 0)} peça(s) validada(s)`}</span>` : '';
     const printerOptions = ['<option value="">Atribuir impressora</option>', ...latest.printers.map((p) => `<option value="${p.id}" ${Number(o.printer_id) === Number(p.id) ? 'selected' : ''}>${escape(p.name)}</option>`)].join('');
-    return `<article class="order-card ${Number(o.priority) === 2 ? 'urgent' : ''}"><div class="order-top"><div><p class="eyebrow">${escape(o.id)}</p><h2>${escape(o.title)}</h2><p>${escape(o.customer || 'Sem cliente')} · ${o.due_date ? escape(o.due_date) : 'Sem prazo'}</p></div><span class="badge ${o.status === 'completed' ? 'online' : Number(o.priority) === 2 ? 'printing' : 'offline'}">${escape(o.status)}</span></div><div class="order-meta">${source}${items}${assistant}<span class="order-gcode-summary">Sem peças/G-codes associados.</span></div><div class="order-actions"><label>Impressora<select data-order-printer="${escape(o.id)}">${printerOptions}</select></label>${o.status !== 'completed' ? `<button class="compact" data-complete-order="${escape(o.id)}">Concluir</button>` : ''}</div></article>`;
+    const actions = isDraft ? '<p class="draft-order-note">Confirma as linhas de peças abaixo para desbloquear a produção.</p>' : `<label>Impressora<select data-order-printer="${escape(o.id)}">${printerOptions}</select></label><button class="compact" data-complete-order="${escape(o.id)}">Concluir</button>`;
+    return `<article class="order-card ${Number(o.priority) === 2 ? 'urgent' : ''} ${isDraft ? 'draft' : ''}"><div class="order-top"><div><p class="eyebrow">${escape(o.id)}</p><h2>${escape(o.title)}</h2><p>${escape(o.customer || 'Sem cliente')} · ${o.due_date ? escape(o.due_date) : 'Sem prazo'}</p></div><span class="badge ${isDraft ? 'draft' : Number(o.priority) === 2 ? 'printing' : 'offline'}">${isDraft ? 'RASCUNHO' : escape(o.status)}</span></div><div class="order-meta">${source}${items}${assistant}<span class="order-gcode-summary">${isDraft ? 'A validar peças contra a biblioteca.' : 'Sem peças/G-codes associados.'}</span></div><div class="order-actions ${isDraft ? 'draft-actions' : ''}">${actions}</div></article>`;
   }).join('') : '<p class="empty">Não existem encomendas ativas na fila.</p>';
   renderHistory();
 };
@@ -422,6 +445,12 @@ function renderHistory() {
 renderOrderLibrarySelectors = function renderOrderPieces() {
   document.querySelectorAll('#order-board .order-card').forEach((card, index) => {
     const order = latest.orders.filter((item) => item.status !== 'completed')[index]; const actions = card.querySelector('.order-actions'); if (!order || !actions) return;
+    if (order.status === 'draft') {
+      actions.insertAdjacentHTML('beforeend', draftReviewMarkup(order));
+      const summary = card.querySelector('.order-gcode-summary');
+      if (summary) summary.textContent = `${(order.draft_lines || []).length} linha(s) no rascunho · validação obrigatória antes de produção.`;
+      return;
+    }
     const links = orderPartLinks(order);
     const rows = links.length ? links.map((link) => link.missing
       ? `<div class="order-file-row broken"><span>Peça removida da biblioteca</span><button class="compact danger" data-remove-order-part="${escape(order.id)}" data-library-part-id="${escape(link.part_id)}">Retirar</button></div>`
@@ -435,6 +464,51 @@ renderOrderLibrarySelectors = function renderOrderPieces() {
   });
 };
 document.addEventListener('click', async (event) => {
+  const saveDraftLine = event.target.closest('[data-save-draft-line]');
+  if (saveDraftLine) {
+    const line = saveDraftLine.closest('[data-draft-line]');
+    if (!line) return;
+    const payload = {
+      part_code: line.querySelector('[name="part_code"]')?.value || '',
+      description: line.querySelector('[name="description"]')?.value || '',
+      quantity: line.querySelector('[name="quantity"]')?.value || '',
+      library_part_id: line.querySelector('[name="library_part_id"]')?.value || '',
+    };
+    try {
+      await api(`/api/orders/${saveDraftLine.dataset.orderDraft}/draft-lines/${saveDraftLine.dataset.saveDraftLine}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      toast('Linha validada contra a biblioteca.'); await update();
+    } catch (error) { toast(error.message, 'error'); }
+    return;
+  }
+  const removeDraftLine = event.target.closest('[data-remove-draft-line]');
+  if (removeDraftLine) {
+    if (!confirm('Retirar esta linha do rascunho? A biblioteca não será alterada.')) return;
+    try {
+      await api(`/api/orders/${removeDraftLine.dataset.orderDraft}/draft-lines/${removeDraftLine.dataset.removeDraftLine}`, { method: 'DELETE' });
+      toast('Linha retirada do rascunho.'); await update();
+    } catch (error) { toast(error.message, 'error'); }
+    return;
+  }
+  const addDraftLine = event.target.closest('[data-add-draft-line]');
+  if (addDraftLine) {
+    const orderId = addDraftLine.dataset.addDraftLine;
+    const partId = document.querySelector(`[data-draft-add-part="${orderId}"]`)?.value;
+    const quantity = document.querySelector(`[data-draft-add-quantity="${orderId}"]`)?.value;
+    try {
+      await api(`/api/orders/${orderId}/draft-lines`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ library_part_id: partId, quantity }) });
+      toast('Linha adicionada e validada.'); await update();
+    } catch (error) { toast(error.message, 'error'); }
+    return;
+  }
+  const approveDraft = event.target.closest('[data-approve-draft]');
+  if (approveDraft) {
+    if (!confirm('Validar as peças e enviar esta encomenda para produção?')) return;
+    try {
+      await api(`/api/orders/${approveDraft.dataset.approveDraft}/approve-draft`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      toast('Peças validadas. A encomenda está pronta para atribuir à produção.'); await update();
+    } catch (error) { toast(error.message, 'error'); }
+    return;
+  }
   const add = event.target.closest('[data-add-order-part]');
   if (add) {
     const id = add.dataset.addOrderPart;

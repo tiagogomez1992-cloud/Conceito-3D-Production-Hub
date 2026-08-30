@@ -73,13 +73,19 @@ test('peça agrega variantes e a encomenda escolhe um G-code', async () => {
   assert.equal(selected.body.plan[0].produced_quantity, 12);
   assert.equal(selected.body.plan[0].excess_quantity, 2);
 
-  const pdfOrder = await json('/api/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Encomenda PDF', items: [{ part_code: 'SUPORTE-LATERAL', description: 'Suporte lateral', quantity: 7 }] }) });
+  const pdfOrder = await json('/api/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Encomenda PDF', document: { file_name: 'pedido.pdf' }, ai_draft: { items: [{ part_code: 'SUPORTE-LATERAL', description: 'Suporte lateral', quantity: 7 }] }, items: [{ part_code: 'SUPORTE-LATERAL', description: 'Suporte lateral', quantity: 7 }] }) });
   assert.equal(pdfOrder.response.status, 201);
-  const prepared = await json(`/api/orders/${pdfOrder.body.id}/ai-prepare-production`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-  assert.equal(prepared.response.status, 200);
-  assert.equal(prepared.body.linked.length, 1);
-  assert.equal(prepared.body.order.library_parts[0].part_id, createdPart.body.id);
-  assert.equal(prepared.body.order.library_parts[0].requested_quantity, 7);
+  assert.equal(pdfOrder.body.status, 'draft');
+  assert.equal(pdfOrder.body.library_parts.length, 0);
+  assert.equal(pdfOrder.body.draft_lines.length, 1);
+  const reviewed = await json(`/api/orders/${pdfOrder.body.id}/draft-lines/${pdfOrder.body.draft_lines[0].id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ library_part_id: createdPart.body.id, quantity: 7 }) });
+  assert.equal(reviewed.response.status, 200);
+  assert.equal(reviewed.body.draft_lines[0].review_status, 'confirmed');
+  const approved = await json(`/api/orders/${pdfOrder.body.id}/approve-draft`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  assert.equal(approved.response.status, 200);
+  assert.equal(approved.body.order.status, 'received');
+  assert.equal(approved.body.order.library_parts[0].part_id, createdPart.body.id);
+  assert.equal(approved.body.order.library_parts[0].requested_quantity, 7);
 
   const protectedFile = await json(`/api/files/${second.body.id}`, { method: 'DELETE' });
   assert.equal(protectedFile.response.status, 409);
