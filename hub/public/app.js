@@ -27,6 +27,18 @@ const printerCatalog = Object.freeze({
   Voron: ['2.4', 'Trident', 'V0.2'],
   'Outra / personalizada': [],
 });
+const templateFieldDefinitions = Object.freeze({
+  customer: { label: 'Nome do cliente', color: '#008bff', surface: 'rgba(0, 139, 255, .20)' },
+  order_number: { label: 'N.º de encomenda', color: '#ff6a00', surface: 'rgba(255, 106, 0, .20)' },
+  due_date: { label: 'Prazo de entrega', color: '#52d69a', surface: 'rgba(82, 214, 154, .20)' },
+  priority: { label: 'Prioridade', color: '#ef5b72', surface: 'rgba(239, 91, 114, .20)' },
+  part_code: { label: 'Referências / códigos de peça', color: '#ae80ff', surface: 'rgba(174, 128, 255, .20)' },
+  part_description: { label: 'Descrição das peças', color: '#12c8c1', surface: 'rgba(18, 200, 193, .20)' },
+  quantity: { label: 'Quantidades', color: '#f0b223', surface: 'rgba(240, 178, 35, .20)' },
+});
+function templateFieldDefinition(field) {
+  return templateFieldDefinitions[field] || { label: String(field || 'Campo'), color: '#f07f23', surface: 'rgba(240, 127, 35, .20)' };
+}
 function setCustomPrinterModel(active) {
   const wrap = $('printer-custom-model-wrap'); const input = $('printer-custom-model');
   wrap.classList.toggle('hidden', !active); input.disabled = !active; input.required = active;
@@ -175,13 +187,38 @@ async function analyseOrderPdf() {
     pendingOrderPdfDraft = null; pendingOrderPdfSignature = ''; renderOrderPdfAnalysis({ warnings: [error.message] }); throw error;
   } finally { submit.disabled = false; submit.textContent = originalLabel; }
 }
+function templateAreaElement(field, index, preview = false) {
+  const definition = templateFieldDefinition(field.field);
+  const area = document.createElement('div');
+  area.className = `template-area${preview ? ' preview' : ''}`;
+  area.style.left = `${field.left}%`; area.style.top = `${field.top}%`;
+  area.style.width = `${field.width}%`; area.style.height = `${field.height}%`;
+  area.style.setProperty('--field-color', definition.color);
+  area.style.setProperty('--field-surface', definition.surface);
+  area.dataset.label = preview ? `${definition.label} · a marcar` : `${definition.label} · área ${index + 1}`;
+  return area;
+}
+function templateFieldPosition(field) {
+  return `${Math.round(field.left)}% × ${Math.round(field.top)}% · ${Math.round(field.width)}% × ${Math.round(field.height)}%`;
+}
 function renderTemplateFields() {
   const canvas = $('pdf-canvas'); canvas.querySelectorAll('.template-area').forEach((node) => node.remove());
-  templateFields.forEach((field, index) => { const area = document.createElement('div'); area.className = 'template-area'; area.style.left = `${field.left}%`; area.style.top = `${field.top}%`; area.style.width = `${field.width}%`; area.style.height = `${field.height}%`; area.dataset.label = field.field; canvas.append(area); });
-  $('template-fields-list').innerHTML = templateFields.length ? templateFields.map((field, index) => `<span class="template-field-chip">${escape(templateFieldLabel(field.field))}<button type="button" data-remove-template-field="${index}" aria-label="Remover área">×</button></span>`).join('') : '<span class="empty">Ainda não marcaste nenhuma área.</span>';
+  templateFields.forEach((field, index) => canvas.append(templateAreaElement(field, index)));
+  if (templateDrag?.candidate) canvas.append(templateAreaElement(templateDrag.candidate, templateFields.length, true));
+  const count = $('template-fields-count');
+  if (count) count.textContent = `${templateFields.length} ${templateFields.length === 1 ? 'área definida' : 'áreas definidas'}`;
+  $('template-fields-list').innerHTML = templateFields.length ? templateFields.map((field, index) => {
+    const definition = templateFieldDefinition(field.field);
+    return `<article class="template-field-card" style="--field-color:${definition.color};--field-surface:${definition.surface}"><span class="template-field-swatch" aria-hidden="true"></span><div><strong>${escape(definition.label)}</strong><small>Área ${index + 1} · ${templateFieldPosition(field)}</small></div><button type="button" data-remove-template-field="${index}" aria-label="Remover área ${index + 1}">Remover</button></article>`;
+  }).join('') : '<div class="template-verification-empty"><strong>Ainda não há áreas marcadas</strong><span>Seleciona um campo e arrasta sobre o PDF.</span></div>';
 }
-function templateFieldLabel(field) { return ({ customer: 'Nome do cliente', order_number: 'N.º encomenda', due_date: 'Prazo de entrega', priority: 'Prioridade', part_code: 'Referências', part_description: 'Descrição das peças', quantity: 'Quantidades' })[field] || field; }
-function resetTemplateForm() { templatePreview = null; templateFields = []; $('template-workspace').classList.add('hidden'); $('template-preview').removeAttribute('src'); $('template-fields-list').innerHTML = ''; }
+function templateFieldLabel(field) { return templateFieldDefinition(field).label; }
+function resetTemplateForm() {
+  templatePreview = null; templateFields = []; templateDrag = null;
+  $('template-workspace').classList.add('hidden'); $('template-preview').removeAttribute('src');
+  const count = $('template-fields-count'); if (count) count.textContent = '0 áreas definidas';
+  $('template-fields-list').innerHTML = '';
+}
 
 async function populateFilaments() { return []; }
 async function refreshCustomers() { try { customers = await api('/api/customers'); renderCustomers(); } catch { $('customer-grid').innerHTML = '<p class="empty">Não foi possível carregar os clientes.</p>'; } }
@@ -237,16 +274,63 @@ document.addEventListener('change', async (event) => {
   if (event.target.matches('[data-order-library-file]')) try { await api(`/api/orders/${event.target.dataset.orderLibraryFile}/library-file`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file_id: event.target.value }) }); toast(event.target.value ? 'G-code associado à encomenda.' : 'G-code removido da encomenda.'); update(); } catch (error) { toast(error.message, 'error'); }
   if (event.target.matches('[data-order-printer]')) try { const printer = latest.printers.find((item) => String(item.id) === String(event.target.value)); await api(`/api/orders/${event.target.dataset.orderPrinter}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: event.target.value || null, printer_model: printer?.model || null, status: event.target.value ? 'queued' : 'received' }) }); toast('Impressora atribuída.'); update(); } catch (error) { toast(error.message, 'error'); }
   if (event.target.matches('[data-file-order]') && event.target.files[0]) { const form = new FormData(); form.append('gcode', event.target.files[0]); const q = prompt('Quantidade de peças:', ''); const material = prompt('Material:', ''); const color = prompt('Cor:', ''); const nozzle = prompt('Bico em mm, ex.: 0.4:', ''); if (q) form.append('quantity', q); if (material) form.append('material', material); if (color) form.append('color', color); if (nozzle) form.append('nozzle', nozzle); try { const result = await api(`/api/orders/${event.target.dataset.fileOrder}/files`, { method: 'POST', body: form }); toast(result.metadata.valid ? 'G-code validado.' : `G-code guardado; falta: ${result.metadata.missing.join(', ')}.`, result.metadata.valid ? 'success' : 'error'); update(); } catch (error) { toast(error.message, 'error'); } }
-  if (event.target.name === 'sample_pdf' && event.target.files[0]) { const form = new FormData(); form.append('pdf', event.target.files[0]); try { templatePreview = await api('/api/customers/template-preview', { method: 'POST', body: form }); templateFields = []; $('template-preview').src = templatePreview.image; $('template-workspace').classList.remove('hidden'); renderTemplateFields(); toast('PDF tipo preparado. Agora marca as áreas de leitura.'); } catch (error) { toast(error.message, 'error'); } }
+  if (event.target.name === 'sample_pdf' && event.target.files[0]) {
+    const form = new FormData(); form.append('pdf', event.target.files[0]);
+    try {
+      templatePreview = await api('/api/customers/template-preview', { method: 'POST', body: form });
+      templateFields = []; templateDrag = null;
+      const image = $('template-preview');
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = () => reject(new Error('Não foi possível apresentar a pré-visualização do PDF.'));
+        image.src = templatePreview.image;
+      });
+      $('template-workspace').classList.remove('hidden'); renderTemplateFields();
+      toast('PDF tipo preparado. Seleciona um campo e arrasta sobre o documento.');
+    } catch (error) { toast(error.message, 'error'); }
+  }
 });
 
-['pointerdown', 'pointermove', 'pointerup'].forEach((name) => $('pdf-canvas').addEventListener(name, (event) => {
-  const image = $('template-preview'); if (!templatePreview || !image.complete || !image.naturalWidth) return;
-  const rect = image.getBoundingClientRect(); const x = Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100)); const y = Math.max(0, Math.min(100, ((event.clientY - rect.top) / rect.height) * 100));
-  if (name === 'pointerdown') { templateDrag = { x, y }; $('pdf-canvas').setPointerCapture?.(event.pointerId); }
-  if (name === 'pointermove' && templateDrag) { const field = { field: $('template-field').value, left: Math.min(templateDrag.x, x), top: Math.min(templateDrag.y, y), width: Math.abs(x - templateDrag.x), height: Math.abs(y - templateDrag.y) }; renderTemplateFields(); if (field.width > .2 && field.height > .2) { const area = document.createElement('div'); area.className = 'template-area preview'; area.style.left = `${field.left}%`; area.style.top = `${field.top}%`; area.style.width = `${field.width}%`; area.style.height = `${field.height}%`; area.dataset.label = field.field; $('pdf-canvas').append(area); } }
-  if (name === 'pointerup' && templateDrag) { const field = { field: $('template-field').value, left: Math.min(templateDrag.x, x), top: Math.min(templateDrag.y, y), width: Math.abs(x - templateDrag.x), height: Math.abs(y - templateDrag.y) }; templateDrag = null; if (field.width < 1 || field.height < 1) return toast('A área marcada é demasiado pequena.', 'error'); templateFields.push(field); renderTemplateFields(); }
-}));
+function templatePointFromEvent(event) {
+  const image = $('template-preview'); const rect = image.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const clamp = (input) => Math.max(0, Math.min(100, input));
+  return { x: clamp(((event.clientX - rect.left) / rect.width) * 100), y: clamp(((event.clientY - rect.top) / rect.height) * 100) };
+}
+function templateCandidate(start, end, field) {
+  return { field, left: Math.min(start.x, end.x), top: Math.min(start.y, end.y), width: Math.abs(end.x - start.x), height: Math.abs(end.y - start.y) };
+}
+const templateCanvas = $('pdf-canvas');
+templateCanvas.addEventListener('pointerdown', (event) => {
+  if (!templatePreview || event.button !== 0) return;
+  const point = templatePointFromEvent(event); if (!point) return;
+  templateDrag = { pointerId: event.pointerId, start: point, candidate: null, field: $('template-field').value };
+  templateCanvas.setPointerCapture?.(event.pointerId); event.preventDefault();
+});
+templateCanvas.addEventListener('pointermove', (event) => {
+  if (!templateDrag || templateDrag.pointerId !== event.pointerId) return;
+  const point = templatePointFromEvent(event); if (!point) return;
+  const candidate = templateCandidate(templateDrag.start, point, templateDrag.field);
+  templateDrag.candidate = candidate.width > .2 && candidate.height > .2 ? candidate : null;
+  renderTemplateFields();
+});
+function finishTemplateDrag(event, cancelled = false) {
+  if (!templateDrag || templateDrag.pointerId !== event.pointerId) return;
+  const activeDrag = templateDrag;
+  const endPoint = templatePointFromEvent(event);
+  if (endPoint) activeDrag.candidate = templateCandidate(activeDrag.start, endPoint, activeDrag.field);
+  templateDrag = null;
+  templateCanvas.releasePointerCapture?.(event.pointerId);
+  if (cancelled || !activeDrag.candidate || activeDrag.candidate.width < 1 || activeDrag.candidate.height < 1) {
+    renderTemplateFields();
+    if (!cancelled) toast('A área marcada é demasiado pequena. Arrasta uma zona maior.', 'error');
+    return;
+  }
+  templateFields.push(activeDrag.candidate); renderTemplateFields();
+  toast(`${templateFieldLabel(activeDrag.candidate.field)} adicionado à verificação.`);
+}
+templateCanvas.addEventListener('pointerup', (event) => finishTemplateDrag(event));
+templateCanvas.addEventListener('pointercancel', (event) => finishTemplateDrag(event, true));
 
 for (const id of ['order-form', 'project-form', 'printer-form', 'spool-form', 'customer-form', 'library-part-form']) $(id).addEventListener('submit', async (event) => {
   const formElement = event.currentTarget;

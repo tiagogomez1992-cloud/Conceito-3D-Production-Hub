@@ -953,3 +953,35 @@ body.project-editor-page .project-workspace {
   .order-part-row { grid-template-columns:1fr; }
   .project-part-form.library-production-form button,.part-upload-form small { grid-column:auto; }
 }
+
+/* Editor de modelos PDF: áreas persistentes e verificação visual. */
+.template-editor { display:grid; grid-template-columns:minmax(0,1.55fr) minmax(270px,.75fr); gap:16px; align-items:start; }
+.template-pdf-panel { min-width:0; padding:10px; background:#15171a; border:1px solid #34373b; border-radius:10px; overflow:auto; }
+.template-pdf-panel .pdf-canvas { display:block; width:fit-content; max-width:100%; }
+.template-pdf-panel .pdf-canvas img { max-width:100%; max-height:min(680px,70vh); }
+.template-verification { min-height:210px; padding:17px; background:#16191c; border:1px solid #34373b; border-radius:10px; }
+.template-verification-heading { display:flex; justify-content:space-between; gap:12px; align-items:start; padding-bottom:13px; border-bottom:1px solid #303338; }
+.template-verification-heading .eyebrow { margin-bottom:5px; }
+.template-verification-heading h2 { margin:0; font-size:1.04rem; }
+.template-verification-heading p:not(.eyebrow) { margin:6px 0 0; color:#aeb3b8; font-size:.76rem; line-height:1.45; }
+.template-count { flex:0 0 auto; color:#b9c4cc; background:#20262b; border:1px solid #35414a; border-radius:100px; padding:5px 8px; font-size:.68rem; font-weight:800; white-space:nowrap; }
+.template-fields-list { display:grid; gap:8px; margin-top:13px; }
+.template-field-card { display:grid; grid-template-columns:12px minmax(0,1fr) auto; gap:9px; align-items:center; padding:10px; background:linear-gradient(90deg,var(--field-surface),transparent 72%); border:1px solid color-mix(in srgb,var(--field-color) 55%,#34373b); border-left:3px solid var(--field-color); border-radius:8px; }
+.template-field-card strong,.template-field-card small { display:block; }
+.template-field-card strong { color:#f7f4ef; font-size:.78rem; }
+.template-field-card small { margin-top:3px; color:#b8c0c5; font-size:.67rem; }
+.template-field-swatch { width:10px; height:10px; border-radius:50%; background:var(--field-color); box-shadow:0 0 0 4px var(--field-surface); }
+.template-field-card button { border:1px solid #46515a; border-radius:6px; padding:5px 7px; background:#22272b; color:#f7f4ef; font:inherit; font-size:.67rem; font-weight:800; cursor:pointer; }
+.template-field-card button:hover { border-color:var(--field-color); color:var(--field-color); }
+.template-verification-empty { display:grid; gap:5px; padding:16px 3px 3px; color:#9ca6ad; font-size:.78rem; line-height:1.45; }
+.template-verification-empty strong { color:#d7dcdf; font-size:.82rem; }
+.template-area { border-color:var(--field-color,#f07f23); background:var(--field-surface,#f07f2333); box-shadow:0 0 0 1px color-mix(in srgb,var(--field-color,#f07f23) 25%,transparent),0 0 16px var(--field-surface,#f07f2333); }
+.template-area.preview { border-color:var(--field-color,#f0b223); background:var(--field-surface,#f0b22326); border-style:dashed; }
+.template-area::after { background:var(--field-color,#f07f23); color:#101214; }
+@media (max-width:980px) {
+  .template-editor { grid-template-columns:1fr; }
+  .template-pdf-panel .pdf-canvas { margin-inline:auto; }
+}
+@media (max-width:700px) {
+  .template-verification-heading { flex-direction:column; }
+}
