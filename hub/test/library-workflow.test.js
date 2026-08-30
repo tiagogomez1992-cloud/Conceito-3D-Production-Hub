@@ -73,6 +73,14 @@ test('peça agrega variantes e a encomenda escolhe um G-code', async () => {
   assert.equal(selected.body.plan[0].produced_quantity, 12);
   assert.equal(selected.body.plan[0].excess_quantity, 2);
 
+  const pdfOrder = await json('/api/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Encomenda PDF', items: [{ part_code: 'SUPORTE-LATERAL', description: 'Suporte lateral', quantity: 7 }] }) });
+  assert.equal(pdfOrder.response.status, 201);
+  const prepared = await json(`/api/orders/${pdfOrder.body.id}/ai-prepare-production`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  assert.equal(prepared.response.status, 200);
+  assert.equal(prepared.body.linked.length, 1);
+  assert.equal(prepared.body.order.library_parts[0].part_id, createdPart.body.id);
+  assert.equal(prepared.body.order.library_parts[0].requested_quantity, 7);
+
   const protectedFile = await json(`/api/files/${second.body.id}`, { method: 'DELETE' });
   assert.equal(protectedFile.response.status, 409);
 });

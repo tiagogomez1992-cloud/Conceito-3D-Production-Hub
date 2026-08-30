@@ -204,16 +204,91 @@ function pdfValue(text, patterns) {
   return '';
 }
 
+function pdfItemDescription(value) {
+  return clean(String(value || '')
+    .replace(/\b(?:qtd\.?|qty\.?|quantidade|quantity|un(?:id(?:ades?)?)?|pcs?|pieces?|pe[cç]as?)\b\s*[:=x]?\s*\d{1,5}\b/ig, '')
+    .replace(/^[\s|;:–—-]+|[\s|;:–—-]+$/g, '')
+    .replace(/\s+/g, ' '), 160);
+}
+
 function pdfItems(text) {
   const seen = new Set();
-  return text.split(/\r?\n/).flatMap((line) => {
-    const match = line.match(/^\s*([A-Z0-9][A-Z0-9._/-]{1,})\s+(?:[^\d\n]{0,80}\s+)?(?:x|qtd\.?|qty\.?|quantidade\s*)?(\d{1,5})\s*$/i);
-    if (!match) return [];
-    const partCode = match[1].toUpperCase(); const quantity = Number(match[2]);
+  const ignoredCodes = new Set(['CODIGO', 'CÓDIGO', 'REFERENCIA', 'REFERÊNCIA', 'DESCRICAO', 'DESCRIÇÃO', 'QTD', 'QTY', 'TOTAL', 'QUANTIDADE', 'QUANTITY']);
+  const patterns = [
+    // Code | description | quantity, frequently used in exported order tables.
+    /^\s*(?:\d+\s*[.)-]\s*)?([A-Z0-9][A-Z0-9._/-]{1,})\s*[|;]\s*(.{2,160}?)\s*[|;]\s*(?:qtd\.?|qty\.?|quantidade|quantity)?\s*[:=x]?\s*(\d{1,5})\s*(?:un(?:id(?:ades?)?)?|pcs?|pieces?|pe[cç]as?)?\s*$/i,
+    // Code - description - quantity, common after PDF-to-text conversion.
+    /^\s*(?:\d+\s*[.)-]\s*)?([A-Z0-9][A-Z0-9._/-]{1,})\s*[-–—]\s*(.{2,160}?)\s*[-–—]\s*(?:qtd\.?|qty\.?|quantidade|quantity)?\s*[:=x]?\s*(\d{1,5})\s*(?:un(?:id(?:ades?)?)?|pcs?|pieces?|pe[cç]as?)?\s*$/i,
+    // Code + description + an explicit quantity label.
+    /^\s*(?:\d+\s*[.)-]\s*)?([A-Z0-9][A-Z0-9._/-]{1,})\s+(.{2,160}?)\s+(?:qtd\.?|qty\.?|quantidade|quantity)\s*[:=x]?\s*(\d{1,5})\s*$/i,
+    // Simple rows such as SKU-01 Support bracket x 12.
+    /^\s*(?:\d+\s*[.)-]\s*)?([A-Z0-9][A-Z0-9._/-]{1,})\s*(.*?)\s+(?:x\s*)?(\d{1,5})\s*(?:un(?:id(?:ades?)?)?|pcs?|pieces?|pe[cç]as?)?\s*$/i,
+  ];
+  const items = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const match = patterns.map((pattern) => line.match(pattern)).find(Boolean);
+    if (!match) continue;
+    const partCode = clean(match[1], 100).toUpperCase(); const quantity = Number(match[3]);
+    if (!partCode || ignoredCodes.has(partCode) || !Number.isInteger(quantity) || quantity < 1) continue;
     const key = `${partCode}:${quantity}`;
-    if (!quantity || seen.has(key)) return [];
-    seen.add(key); return [{ part_code: partCode, quantity }];
-  });
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push({ part_code: partCode, description: pdfItemDescription(match[2]), quantity, confidence: 'detected' });
+  }
+  return items.slice(0, 100);
+}
+
+function normalizedReference(value) {
+  return clean(value, 500).toLocaleUpperCase('pt-PT').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9]+/g, '');
+}
+
+function itemReferenceCandidates(item) {
+  return [item?.part_code, item?.description].map(normalizedReference).filter((value) => value.length >= 3);
+}
+
+function libraryPartMatch(saved, item) {
+  const references = itemReferenceCandidates(item);
+  if (!references.length) return null;
+  const scored = saved.library_parts.map((part) => {
+    const values = [part.name, part.description, ...libraryPartFiles(saved, part.id, true).map((file) => path.basename(file.original_name || '', path.extname(file.original_name || '')))];
+    let score = 0; let matchedValue = '';
+    for (const reference of references) for (const value of values) {
+      const candidate = normalizedReference(value);
+      if (!candidate || candidate.length < 3) continue;
+      const next = candidate === reference ? 1 : (candidate.includes(reference) || reference.includes(candidate)) && Math.min(candidate.length, reference.length) >= 4 ? 0.9 : 0;
+      if (next > score) { score = next; matchedValue = value; }
+    }
+    return { part, score, matched_value: matchedValue };
+  }).filter((entry) => entry.score > 0).sort((left, right) => right.score - left.score || String(left.part.name).localeCompare(String(right.part.name)));
+  if (!scored.length) return null;
+  const best = scored[0]; const next = scored[1];
+  return { ...best, ambiguous: Boolean(next && best.score < 1 && best.score - next.score < 0.1), alternatives: scored.slice(1, 3).map((entry) => ({ part_id: entry.part.id, part_name: entry.part.name, confidence: Math.round(entry.score * 100) })) };
+}
+
+function prepareOrderWithPdfAssistant(saved, order) {
+  const sourceItems = Array.isArray(order.items) ? order.items.filter((item) => Number(item?.quantity) > 0) : [];
+  const existing = Array.isArray(order.library_parts) ? order.library_parts : [];
+  const linked = []; const review = []; const unmatched = [];
+  for (const source of sourceItems) {
+    const match = libraryPartMatch(saved, source);
+    if (!match) { unmatched.push({ part_code: source.part_code || '', description: source.description || '', quantity: Number(source.quantity) }); continue; }
+    const candidate = { part_code: source.part_code || '', description: source.description || '', quantity: Number(source.quantity), part_id: match.part.id, part_name: match.part.name, confidence: Math.round(match.score * 100), alternatives: match.alternatives };
+    if (match.score < 0.9 || match.ambiguous) { review.push(candidate); continue; }
+    const current = existing.find((entry) => entry.part_id === match.part.id);
+    if (current) {
+      if (current.source === 'pdf-assistant') current.requested_quantity = Number(source.quantity);
+      linked.push({ ...candidate, action: 'already-linked' });
+    } else {
+      existing.push({ part_id: match.part.id, requested_quantity: Number(source.quantity), selected_file_id: null, source: 'pdf-assistant', source_reference: clean(source.part_code || source.description, 160) });
+      linked.push({ ...candidate, action: 'linked' });
+    }
+  }
+  order.library_parts = existing;
+  order.ai_assistant = {
+    prepared_at: new Date().toISOString(), source: 'local-pdf-assistant', source_items: sourceItems.length,
+    linked, review, unmatched,
+  };
+  return { linked, review, unmatched, plan: orderGcodePlan(saved, order) };
 }
 
 function draftFromPdfText(text) {
@@ -265,7 +340,7 @@ async function renderPdfFirstPage(pdf, directory) {
 
 function templateFields(value) {
   if (!Array.isArray(value)) return [];
-  const allowed = new Set(['customer', 'order_number', 'part_code', 'quantity']);
+  const allowed = new Set(['customer', 'order_number', 'part_code', 'part_description', 'quantity']);
   return value.filter((field) => allowed.has(field?.field)).map((field) => ({
     field: field.field,
     left: Math.max(0, Math.min(99.9, Number(field.left) || 0)),
@@ -296,8 +371,9 @@ async function extractWithCustomerTemplate(pdf, customer) {
     }
     const values = Object.fromEntries(Object.entries(result).map(([key, parts]) => [key, parts.filter(Boolean).join(' ')]));
     const codes = String(values.part_code || '').match(/[A-Z0-9][A-Z0-9._/-]{1,}/gi) || [];
+    const descriptions = String(values.part_description || '').split(/\s{2,}|[|;]/).map(pdfItemDescription).filter(Boolean);
     const quantities = (String(values.quantity || '').match(/\d{1,5}/g) || []).map(Number).filter(Boolean);
-    const items = codes.slice(0, Math.min(codes.length, quantities.length, 100)).map((part_code, index) => ({ part_code: part_code.toUpperCase(), quantity: quantities[index] }));
+    const items = codes.slice(0, Math.min(codes.length, quantities.length, 100)).map((part_code, index) => ({ part_code: part_code.toUpperCase(), description: descriptions[index] || (descriptions.length === 1 ? descriptions[0] : ''), quantity: quantities[index], confidence: 'template' }));
     return {
       customer: customer.name,
       order_number: clean(values.order_number, 120),
@@ -659,6 +735,14 @@ app.delete('/api/orders/:id', (req, res) => {
   saved.orders = saved.orders.filter((order) => order.id !== item.id);
   saved.consumption = saved.consumption.filter((entry) => entry.order_id !== item.id);
   save(saved); res.status(204).end();
+});
+app.post('/api/orders/:id/ai-prepare-production', (req, res) => {
+  const saved = state(); const item = getOrder(saved, req.params.id);
+  if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
+  if (!Array.isArray(item.items) || !item.items.length) return res.status(409).json({ error: 'Esta encomenda ainda não tem referências e quantidades extraídas do PDF.' });
+  const result = prepareOrderWithPdfAssistant(saved, item);
+  item.updated_at = new Date().toISOString(); save(saved);
+  res.json({ order: item, ...result, message: `${result.linked.length} peça(s) preparada(s), ${result.review.length} para rever e ${result.unmatched.length} sem correspondência.` });
 });
 app.post('/api/orders/:id/library-file', (req, res) => {
   const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
