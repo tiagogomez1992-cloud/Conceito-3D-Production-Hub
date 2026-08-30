@@ -6,6 +6,7 @@ const os = require('os');
 const crypto = require('crypto');
 const multer = require('multer');
 const net = require('net');
+const http = require('http');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 
@@ -22,6 +23,20 @@ const uploadsDir = path.join(dataDir, 'uploads');
 const stateFile = path.join(dataDir, 'portal-state.json');
 const authUser = process.env.HUB_AUTH_USER || '';
 const authPassword = process.env.HUB_AUTH_PASSWORD || '';
+// A display uses a deliberately narrow, read-only API. It never needs the
+// administrator password used by the browser portal.
+const displayApiToken = clean(process.env.DISPLAY_API_TOKEN, 240);
+const dockerSocket = clean(process.env.DOCKER_SOCKET, 300) || '/var/run/docker.sock';
+const hostRoot = clean(process.env.HOST_ROOT, 300) || '/host';
+const backupDir = clean(process.env.BACKUP_DIR, 500) || `${hostRoot}/srv/containers/backups`;
+const monitoredContainers = (clean(process.env.MONITORED_CONTAINERS, 1000)
+  || 'Production Hub:conceito3d-production-hub,Print Farm Manager:print-farm-manager,Spoolman:spoolman,Portainer:portainer,Tracefinity:tracefinity')
+  .split(',').map((value) => {
+    const [label, container] = value.split(':').map((item) => clean(item, 120));
+    return label && container ? { label, container } : null;
+  }).filter(Boolean);
+const configuredServerAddresses = [clean(process.env.SERVER_LOCAL_IP, 80), clean(process.env.SERVER_TAILSCALE_IP, 80)].filter(Boolean);
+let previousCpuSample = null;
 // AI runs locally through Ollama by default. OpenAI remains an explicit option.
 const configuredAiProvider = clean(process.env.AI_PROVIDER, 20).toLowerCase();
 const aiProvider = ['ollama', 'openai', 'auto', 'local'].includes(configuredAiProvider) ? configuredAiProvider : 'ollama';
@@ -140,7 +155,13 @@ function orderGcodePlan(value, order) {
   });
 }
 
+function displayTokenIsValid(req) {
+  const supplied = clean(req.get('X-Display-Token'), 240);
+  if (!displayApiToken || !supplied || supplied.length !== displayApiToken.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(displayApiToken));
+}
 function authentication(req, res, next) {
+  if (req.path === '/api/display/status' && displayTokenIsValid(req)) return next();
   if (!authUser || !authPassword) return next();
   const [scheme, encoded] = String(req.headers.authorization || '').split(' ');
   const [user, password] = scheme === 'Basic' && encoded ? Buffer.from(encoded, 'base64').toString('utf8').split(':') : [];
@@ -876,6 +897,130 @@ async function safeRequest(method, url, data) {
 }
 function forwarded(res, result, status = 201) { return result.ok ? res.status(status).json(result.data) : res.status(result.status || 502).json({ error: result.error || 'O pedido não foi aceite.' }); }
 
+function hostFile(relativePath) {
+  const preferred = path.join(hostRoot, relativePath.replace(/^\/+/, ''));
+  return fs.existsSync(preferred) ? preferred : relativePath;
+}
+function readTextFile(filePath) {
+  try { return fs.readFileSync(filePath, 'utf8'); } catch { return ''; }
+}
+function hostHostname() {
+  return clean(readTextFile(hostFile('/etc/hostname')).split(/\r?\n/)[0], 120) || os.hostname();
+}
+function hostUptimeSeconds() {
+  const fromProc = Number(readTextFile(hostFile('/proc/uptime')).split(/\s+/)[0]);
+  return Number.isFinite(fromProc) && fromProc > 0 ? Math.floor(fromProc) : Math.floor(os.uptime());
+}
+function hostMemory() {
+  const values = {};
+  for (const line of readTextFile(hostFile('/proc/meminfo')).split(/\r?\n/)) {
+    const match = line.match(/^(MemTotal|MemAvailable):\s+(\d+)\s+kB/i);
+    if (match) values[match[1].toLowerCase()] = Number(match[2]) * 1024;
+  }
+  const total = values.memtotal || os.totalmem(); const available = values.memavailable ?? os.freemem();
+  return { total_mb: Math.round(total / 1048576), used_mb: Math.round(Math.max(0, total - available) / 1048576), available_mb: Math.round(available / 1048576) };
+}
+function readCpuSample() {
+  const match = readTextFile(hostFile('/proc/stat')).match(/^cpu\s+(.+)$/m);
+  if (!match) return null;
+  const values = match[1].trim().split(/\s+/).map(Number);
+  if (values.some((value) => !Number.isFinite(value))) return null;
+  const idle = (values[3] || 0) + (values[4] || 0); const total = values.reduce((sum, value) => sum + value, 0);
+  return { idle, total };
+}
+function hostCpu() {
+  const sample = readCpuSample(); const previous = previousCpuSample; previousCpuSample = sample;
+  let usage = null;
+  if (sample && previous && sample.total > previous.total) usage = Number((100 * (1 - ((sample.idle - previous.idle) / (sample.total - previous.total)))).toFixed(1));
+  const load = Number(readTextFile(hostFile('/proc/loadavg')).split(/\s+/)[0]);
+  return { usage_percent: Number.isFinite(usage) ? Math.max(0, Math.min(100, usage)) : null, load_1m: Number.isFinite(load) ? Number(load.toFixed(2)) : Number(os.loadavg()[0].toFixed(2)) };
+}
+function hostCpuTemperature() {
+  const roots = [hostFile('/sys/class/thermal'), hostFile('/sys/class/hwmon')]; const readings = [];
+  for (const root of roots) {
+    try {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        const entryPath = path.join(root, entry.name);
+        if (!entry.isDirectory()) continue;
+        if (entry.name.startsWith('thermal_zone')) {
+          const raw = Number(readTextFile(path.join(entryPath, 'temp')).trim()); if (raw > 1000) readings.push(raw / 1000);
+        } else if (entry.name.startsWith('hwmon')) {
+          const sensorName = clean(readTextFile(path.join(entryPath, 'name')).trim(), 80).toLowerCase();
+          if (sensorName && !/(coretemp|k10temp|zenpower|cpu|acpitz)/.test(sensorName)) continue;
+          for (const sensor of fs.readdirSync(entryPath).filter((name) => /^temp\d+_input$/.test(name))) {
+            const raw = Number(readTextFile(path.join(entryPath, sensor)).trim()); if (raw > 1000) readings.push(raw / 1000);
+          }
+        }
+      }
+    } catch { /* A temperatura não é exposta em todos os computadores. */ }
+  }
+  const useful = readings.filter((value) => value >= 10 && value <= 120);
+  return useful.length ? Number((Math.max(...useful)).toFixed(1)) : null;
+}
+function monitorDiskEntries() {
+  const configured = (clean(process.env.MONITOR_DISKS, 1000) || `${hostRoot}:Sistema,${hostRoot}/srv/containers:Contentores e backups`)
+    .split(',').map((entry) => { const [diskPath, label] = entry.split(':'); return { diskPath: clean(diskPath, 500), label: clean(label, 120) || clean(diskPath, 120) }; }).filter((entry) => entry.diskPath);
+  const entries = [];
+  for (const entry of configured) {
+    try {
+      const stats = fs.statfsSync(entry.diskPath); const total = Number(stats.blocks) * Number(stats.bsize); const available = Number(stats.bavail) * Number(stats.bsize); const used = Math.max(0, total - available);
+      entries.push({ label: entry.label, path: entry.diskPath.replace(hostRoot, '') || '/', total_gb: Number((total / 1073741824).toFixed(1)), used_gb: Number((used / 1073741824).toFixed(1)), free_gb: Number((available / 1073741824).toFixed(1)), used_percent: total ? Math.round((used / total) * 100) : 0 });
+    } catch { entries.push({ label: entry.label, path: entry.diskPath.replace(hostRoot, '') || '/', unavailable: true }); }
+  }
+  return entries;
+}
+function entrySize(entryPath) {
+  try {
+    const stats = fs.statSync(entryPath); if (stats.isFile()) return stats.size;
+    if (!stats.isDirectory()) return 0;
+    return fs.readdirSync(entryPath).reduce((sum, child) => sum + entrySize(path.join(entryPath, child)), 0);
+  } catch { return 0; }
+}
+function latestBackup() {
+  try {
+    const candidates = fs.readdirSync(backupDir).map((name) => {
+      const backupPath = path.join(backupDir, name); const stats = fs.statSync(backupPath);
+      return { name, backupPath, modified_at: stats.mtime.toISOString(), modified_ms: stats.mtimeMs, size_bytes: entrySize(backupPath) };
+    }).filter((entry) => entry.size_bytes > 0).sort((left, right) => right.modified_ms - left.modified_ms);
+    if (!candidates.length) return { status: 'missing', message: 'Ainda não existe um backup no diretório configurado.' };
+    const latest = candidates[0]; const ageHours = Number(((Date.now() - latest.modified_ms) / 3600000).toFixed(1));
+    return { status: ageHours > 72 ? 'critical' : ageHours > 30 ? 'warning' : 'ok', name: latest.name, modified_at: latest.modified_at, size_bytes: latest.size_bytes, age_hours: ageHours };
+  } catch { return { status: 'unavailable', message: 'O diretório de backups não está disponível para monitorização.' }; }
+}
+function dockerContainers() {
+  return new Promise((resolve) => {
+    const request = http.request({ socketPath: dockerSocket, path: '/containers/json?all=1', method: 'GET', timeout: 2500 }, (response) => {
+      let payload = ''; response.setEncoding('utf8'); response.on('data', (chunk) => { payload += chunk; }); response.on('end', () => {
+        try { resolve({ available: response.statusCode === 200, items: response.statusCode === 200 ? JSON.parse(payload) : [] }); } catch { resolve({ available: false, items: [] }); }
+      });
+    });
+    request.on('timeout', () => request.destroy()); request.on('error', () => resolve({ available: false, items: [] })); request.end();
+  });
+}
+function serviceState(container) {
+  if (!container) return { status: 'missing', detail: 'Não encontrado no Docker' };
+  const state = String(container.State || '').toLowerCase();
+  if (state === 'running') return { status: 'running', detail: container.Status || 'Em execução' };
+  if (state === 'paused') return { status: 'warning', detail: container.Status || 'Em pausa' };
+  return { status: 'stopped', detail: container.Status || 'Parado' };
+}
+async function displayStatus() {
+  const docker = await dockerContainers(); const byName = new Map(docker.items.map((item) => [String(item.Names?.[0] || '').replace(/^\//, ''), item]));
+  const services = monitoredContainers.map((item) => ({ id: item.container, label: item.label, ...serviceState(byName.get(item.container)) }));
+  const disks = monitorDiskEntries(); const backup = latestBackup(); const saved = state(); const printers = await managedPrinterSnapshots(saved);
+  const alerts = [];
+  for (const service of services) if (service.status !== 'running') alerts.push({ severity: service.status === 'warning' ? 'warning' : 'critical', message: `${service.label}: ${service.detail}` });
+  for (const disk of disks) if (!disk.unavailable && disk.used_percent >= 85) alerts.push({ severity: disk.used_percent >= 95 ? 'critical' : 'warning', message: `${disk.label}: ${disk.used_percent}% usado` });
+  if (backup.status === 'missing' || backup.status === 'critical') alerts.push({ severity: 'critical', message: backup.message || 'O último backup precisa de atenção.' });
+  else if (backup.status === 'warning') alerts.push({ severity: 'warning', message: `Último backup há ${backup.age_hours} horas.` });
+  return {
+    generated_at: new Date().toISOString(), overall_status: alerts.some((alert) => alert.severity === 'critical') ? 'critical' : alerts.length ? 'warning' : 'ok',
+    services, resources: { hostname: hostHostname(), uptime_seconds: hostUptimeSeconds(), cpu: hostCpu(), cpu_temperature_c: hostCpuTemperature(), memory: hostMemory(), disks },
+    backup, network: { addresses: configuredServerAddresses }, printers: { total: printers.length, online: printers.filter((printer) => ['IDLE', 'PRINTING', 'FINISHED', 'PAUSED', 'ONLINE'].includes(String(printer.status || '').toUpperCase())).length, printing: printers.filter((printer) => String(printer.status || '').toUpperCase() === 'PRINTING').length },
+    alerts, docker_monitoring: docker.available,
+  };
+}
+
 app.get('/api/summary', async (_req, res) => {
   const saved = state(); const printerItems = await managedPrinterSnapshots(saved); const spoolItems = saved.spools.map(localSpool);
   const online = new Set(['IDLE', 'PRINTING', 'FINISHED', 'PAUSED', 'ONLINE']);
@@ -883,6 +1028,13 @@ app.get('/api/summary', async (_req, res) => {
   const projects = [...saved.projects].sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || Number(b.id) - Number(a.id));
   const jobs = [...saved.jobs].map((job) => ({ ...job, part_name: getManagedPart(saved, job.part_id)?.name || null, printer_name: getManagedPrinter(saved, job.printer_id)?.name || null }));
   res.json({ generatedAt: new Date().toISOString(), services: { productionHub: true }, system: { hostname: os.hostname(), uptime_seconds: os.uptime(), memory_total_mb: Math.round(os.totalmem() / 1048576), memory_used_mb: Math.round((os.totalmem() - os.freemem()) / 1048576), cpu_load_1m: Number(os.loadavg()[0].toFixed(2)) }, printers: { total: printerItems.length, online: printerItems.filter((item) => online.has(String(item.status || '').toUpperCase())).length, printing: printerItems.filter((item) => String(item.status || '').toUpperCase() === 'PRINTING').length, items: printerItems }, spools: { total: spoolItems.length, low: spoolItems.filter((item) => Number(item.remaining_weight || 0) > 0 && Number(item.remaining_weight || 0) < 200).length, items: spoolItems }, production: { projects, jobs, orders }, assignments: saved.assignments, consumption: saved.consumption.slice(0, 20) });
+});
+
+app.get('/api/display/status', async (req, res) => {
+  if (!displayTokenIsValid(req)) return res.status(401).json({ error: 'Token de painel inválido.' });
+  if (!displayApiToken) return res.status(503).json({ error: 'O painel ESP32 ainda não foi configurado no servidor.' });
+  res.set('Cache-Control', 'no-store');
+  return res.json(await displayStatus());
 });
 
 function libraryParts(value) {

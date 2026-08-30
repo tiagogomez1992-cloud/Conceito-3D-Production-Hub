@@ -35,7 +35,7 @@ function gcodeForm(partId, filename, quantity, printerModel, color) {
 
 test.before(async () => {
   dataDir = fs.mkdtempSync(path.join(process.cwd(), '.test-data-'));
-  server = spawn(process.execPath, ['server.js'], { cwd: path.resolve(__dirname, '..'), env: { ...process.env, PORT: String(port), DATA_DIR: dataDir }, stdio: 'pipe' });
+  server = spawn(process.execPath, ['server.js'], { cwd: path.resolve(__dirname, '..'), env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, DISPLAY_API_TOKEN: 'test-display-token' }, stdio: 'pipe' });
   await waitForServer();
 });
 test.after(() => {
@@ -107,4 +107,12 @@ test('impressora, bobine e projeto são guardados pelo próprio portal', async (
   assert.equal(summary.body.printers.total, 1);
   assert.equal(summary.body.spools.total, 1);
   assert.equal(summary.body.production.projects.length, 1);
+
+  const deniedDisplay = await json('/api/display/status');
+  assert.equal(deniedDisplay.response.status, 401);
+  const display = await json('/api/display/status', { headers: { 'X-Display-Token': 'test-display-token' } });
+  assert.equal(display.response.status, 200);
+  assert.equal(display.body.services.length, 5);
+  assert.equal(display.body.resources.memory.total_mb > 0, true);
+  assert.equal(Array.isArray(display.body.resources.disks), true);
 });

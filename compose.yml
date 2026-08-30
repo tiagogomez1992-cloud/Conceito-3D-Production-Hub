@@ -14,8 +14,20 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
+      # Apenas o painel ESP32 usa este token de leitura. Não reutilizes a
+      # palavra-passe do portal.
+      DISPLAY_API_TOKEN: ${DISPLAY_API_TOKEN:-}
+      DOCKER_SOCKET: /var/run/docker.sock
+      HOST_ROOT: /host
+      BACKUP_DIR: "${BACKUP_DIR:-/host/srv/containers/backups}"
+      MONITOR_DISKS: "${MONITOR_DISKS:-/host:Sistema,/host/srv/containers:Contentores e backups}"
+      SERVER_LOCAL_IP: ${SERVER_LOCAL_IP:-}
+      SERVER_TAILSCALE_IP: ${SERVER_TAILSCALE_IP:-}
     volumes:
       - hub-data:/app/data
+      # Apenas leitura: fornece métricas reais do HP e o estado dos serviços.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/host:ro
 
   ollama:
     image: ollama/ollama:latest

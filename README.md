@@ -35,6 +35,27 @@ Todos os dados persistem no volume Docker `hub-data`, montado em `/app/data`
 dentro do contentor. Nunca use `docker compose down -v` num servidor com dados
 de produção.
 
+## Painel de estado ESP32
+
+O repositório inclui firmware para o ESP32-2432S028 (CYD) em
+[`esp32-status-panel/`](esp32-status-panel). O painel mostra quatro páginas:
+resumo dos cinco serviços, recursos do HP, backups e alertas.
+
+O Hub disponibiliza apenas ao painel o endpoint de leitura
+`/api/display/status`. Antes de o usar, defina no `.env` do servidor um
+`DISPLAY_API_TOKEN` aleatório e o IP **local** do HP:
+
+```dotenv
+DISPLAY_API_TOKEN=um-token-longo-e-aleatorio
+SERVER_LOCAL_IP=192.168.x.x
+SERVER_TAILSCALE_IP=100.74.119.75
+```
+
+O `compose.yml` monta dados do host em modo de leitura para obter uso real dos
+discos, temperatura quando o hardware a expõe, backups e estado dos contentores.
+O socket Docker também é necessário para esta última informação; mantenha o
+portal protegido e não publique a porta 8080 na Internet.
+
 ## IA local para encomendas (recomendada)
 
 O `docker compose` inclui Ollama e guarda os modelos no volume `ollama-data`.
