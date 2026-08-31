@@ -850,7 +850,13 @@ function reportedSlotEntries(source) {
   if (Array.isArray(source)) return source;
   if (!source || typeof source !== 'object') return [];
   for (const key of ['slots', 'lanes', 'trays', 'materials', 'filaments', 'data']) if (Array.isArray(source[key])) return source[key];
-  return Object.entries(source).map(([slot, value]) => value && typeof value === 'object' ? { slot: Number(slot) + (Number(slot) === 0 ? 1 : 0), ...value } : null).filter(Boolean);
+  return Object.entries(source).map(([key, value], index) => {
+    if (!value || typeof value !== 'object') return null;
+    const numberInKey = key.match(/(\d+)$/)?.[1];
+    // Moonraker lane_data stores lane numbers as zero-based `lane` values.
+    const slot = value.slot ?? value.index ?? value.id ?? (value.lane !== undefined ? Number(value.lane) + 1 : numberInKey ? Number(numberInKey) : index + 1);
+    return { ...value, slot };
+  }).filter(Boolean);
 }
 function moonrakerMaterialSlots(status, printer) {
   const system = normalizeMaterialSystem(printer.material_system || inferMaterialSystem(printer));
@@ -865,11 +871,19 @@ function moonrakerMaterialSlots(status, printer) {
 async function moonrakerReportedMaterialSlots(printer) {
   const system = normalizeMaterialSystem(printer.material_system || inferMaterialSystem(printer));
   if (system === 'single') return [];
+  const headers = printer.api_key ? { 'X-Api-Key': printer.api_key } : {};
+  // ACE/AMS integrations publish their inventory here for Moonraker clients
+  // such as OrcaSlicer. It is a Moonraker DB namespace, not a Klipper object.
+  try {
+    const response = await client.get(printerEndpoint(printer, '/server/database/item?namespace=lane_data', 7125), { timeout: 2200, headers });
+    const slots = moonrakerMaterialSlots({ lane_data: response.data?.result?.value || {} }, printer);
+    if (slots.length) return slots;
+  } catch { /* This installation may not publish ACE inventory to Moonraker DB. */ }
   // These objects are optional extensions. Query them individually so a normal
   // Klipper installation never becomes OFFLINE just because it lacks ACE/AMS data.
   for (const objectName of ['lane_data', 'ace', 'ace_data', 'ams', 'material_slots']) {
     try {
-      const response = await client.get(printerEndpoint(printer, `/printer/objects/query?${objectName}`, 7125), { timeout: 1800 });
+      const response = await client.get(printerEndpoint(printer, `/printer/objects/query?${objectName}`, 7125), { timeout: 1800, headers });
       const slots = moonrakerMaterialSlots(response.data?.result?.status || {}, printer);
       if (slots.length) return slots;
     } catch { /* Optional object not present on this firmware. */ }
@@ -914,7 +928,7 @@ async function directPrinterStatus(printer, value) {
   const unavailable = { ...printer, status: 'OFFLINE', job_name: null, job_progress: 0, job_time_remaining: null, material_profile: localProfile(), checked_at: new Date().toISOString() };
   try {
     if (printer.type === 'klipper') {
-      const response = await client.get(printerEndpoint(printer, '/printer/objects/query?print_stats&virtual_sdcard&display_status', 7125), { timeout: 3500 });
+      const response = await client.get(printerEndpoint(printer, '/printer/objects/query?print_stats&virtual_sdcard&display_status', 7125), { timeout: 3500, headers: printer.api_key ? { 'X-Api-Key': printer.api_key } : {} });
       const status = response.data?.result?.status || {};
       const stats = status.print_stats || {}; const virtualSd = status.virtual_sdcard || {}; const display = status.display_status || {};
       const reportedSlots = await moonrakerReportedMaterialSlots(printer);
