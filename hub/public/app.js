@@ -72,6 +72,10 @@ function setupPrinterCatalog() {
     setCustomPrinterModel(model.value === customModelValue);
     const fingerprint = `${brand.value || ''} ${model.value || ''}`.toLowerCase();
     if (fingerprint.includes('anycubic') && /(?:kobra\s*)?s1/.test(fingerprint)) setPrinterMaterialSystem('ace', 4);
+    if (fingerprint.includes('bambu') && /\b(?:a1|p1|x1|h2)/.test(fingerprint)) {
+      $('printer-type').value = 'bambu';
+      setPrinterMaterialSystem('ams', 4);
+    }
   });
   materialSystem.addEventListener('change', () => setPrinterMaterialSystem(materialSystem.value, $('printer-material-slot-count').value));
 }
@@ -114,19 +118,30 @@ function materialProfile(printer) {
   return { system: printer.material_system || 'single', label: 'Bobine única', slot_count: 1, automatic: false, slots: [{ slot: 1, label: 'Extrusor', spool_id: spool?.id || null, material: spool ? spoolInfo(spool).material : '', color: spool?.color_name || spool?.color || '', color_hex: spool?.filament?.color_hex || '', remaining_weight: spool ? spoolInfo(spool).remaining : null, source: 'manual' }] };
 }
 function materialSystemText(system) { return system === 'ams' ? 'AMS' : system === 'ace' ? 'ACE' : 'Bobine única'; }
+function materialIndex(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : null;
+}
 function materialSlotText(slot) {
   if (!slot?.spool_id && !slot?.material && !slot?.color) return 'Sem material associado';
   const source = slot.spool_id ? `#${slot.spool_id} · ` : '';
   const grams = Number(slot.remaining_weight);
-  return `${source}${slot.material || 'Material'}${slot.color ? ` ${slot.color}` : ''}${Number.isFinite(grams) ? ` · ${Math.round(grams)} g` : ''}`;
+  const hasPercentage = slot?.remaining_percent !== undefined && slot?.remaining_percent !== null && slot?.remaining_percent !== '' && Number.isFinite(Number(slot.remaining_percent));
+  const remaining = Number.isFinite(grams) ? ` · ${Math.round(grams)} g` : hasPercentage ? ` · ${Math.round(Number(slot.remaining_percent))}%` : '';
+  return `${source}${slot.material || 'Material'}${slot.color ? ` ${slot.color}` : ''}${remaining}`;
 }
 function materialSlotSource(slot) {
+  const amsUnit = materialIndex(slot?.ams_unit); const amsSlot = materialIndex(slot?.ams_slot);
+  if (amsUnit !== null && amsSlot !== null) return `AMS ${amsUnit + 1} · slot ${amsSlot + 1}`;
   if (slot?.mmu_gate !== null && slot?.mmu_gate !== undefined && Number.isInteger(Number(slot.mmu_gate))) return `MMU · canal ${slot.mmu_gate}`;
   if (String(slot?.source || '').includes('impressora')) return 'Lido da impressora';
   return slot?.spool_id ? 'Associado ao inventário' : 'A configurar';
 }
 function materialSlotHeading(slot) {
   const label = slot?.label || `Slot ${slot?.slot || ''}`.trim();
+  const amsUnit = materialIndex(slot?.ams_unit); const amsSlot = materialIndex(slot?.ams_slot);
+  if (amsUnit !== null && amsSlot !== null) return `AMS ${amsUnit + 1} · Slot ${amsSlot + 1}`;
   return slot?.mmu_gate !== null && slot?.mmu_gate !== undefined && Number.isInteger(Number(slot.mmu_gate)) ? `${label} · MMU ${slot.mmu_gate}` : label;
 }
 function materialPanel(printer) {

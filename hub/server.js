@@ -17,6 +17,7 @@ const port = Number(process.env.PORT || 8080);
 const internalProductionUrl = 'http://production-hub.local';
 const client = axios.create({ timeout: 5000 });
 const discoveryClient = axios.create({ timeout: 1200, validateStatus: () => true, maxRedirects: 0 });
+const bambuReportCache = new Map();
 const printerConnectors = new Set(['prusa', 'elegoo-centauri', 'elegoo-centauri2', 'bambu', 'creality', 'anycubic', 'klipper', 'octoprint']);
 const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
 const uploadsDir = path.join(dataDir, 'uploads');
@@ -788,6 +789,7 @@ function normalizeMaterialSystem(value) {
 function inferMaterialSystem(printer = {}) {
   const fingerprint = `${printer.type || ''} ${printer.brand || ''} ${printer.model || ''}`.toLowerCase();
   if (/anycubic/.test(fingerprint) && /(?:kobra\s*)?s1/.test(fingerprint)) return 'ace';
+  if (/bambu/.test(fingerprint) && /\b(?:a1(?:\s|$)|p1[sp]?|x1(?:\s|$|carbon|e)|h2[ds]?)\b/.test(fingerprint)) return 'ams';
   return 'single';
 }
 function materialSlotCount(system, rawCount) {
@@ -801,6 +803,11 @@ function materialSystemLabel(system) {
 function materialSlotLabel(system, index) {
   return system === 'ams' ? `AMS ${index}` : system === 'ace' ? `ACE ${index}` : 'Extrusor';
 }
+function integerIndex(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : null;
+}
 function normalizedMaterial(value) {
   return clean(value, 80).toLocaleUpperCase('pt-PT').replace(/[\s_-]+/g, ' ');
 }
@@ -809,6 +816,8 @@ function normalizedColor(value) {
 }
 function colorHex(value) {
   const candidate = clean(value, 24).replace(/^#/, '');
+  // Bambu reports tray colours as RRGGBBAA. CSS needs the RGB portion.
+  if (/^[0-9a-f]{8}$/i.test(candidate)) return `#${candidate.slice(0, 6).toUpperCase()}`;
   return /^[0-9a-f]{6}$/i.test(candidate) ? `#${candidate.toUpperCase()}` : '';
 }
 function materialIsCompatible(slot, requiredMaterial, requiredColor) {
@@ -844,8 +853,12 @@ function normalizedReportedSlot(raw, fallbackSlot, system) {
   const color = clean(raw?.color || raw?.colour || raw?.color_name, 80);
   const hex = colorHex(raw?.color_hex || raw?.hex || color);
   if (!material && !color && !hex) return null;
-  const mmuGate = Number.isInteger(Number(raw?.mmu_gate)) ? Number(raw.mmu_gate) : null;
-  return { slot, label: materialSlotLabel(system, slot), spool_id: null, material, color, color_hex: hex, remaining_weight: Number.isFinite(Number(raw?.remaining_weight ?? raw?.remaining ?? raw?.weight)) ? Number(raw.remaining_weight ?? raw.remaining ?? raw.weight) : null, source: mmuGate === null ? 'impressora' : `impressora · MMU ${mmuGate}`, mmu_gate: mmuGate, reported_spool_id: raw?.spool_id ?? null, gate_status: raw?.gate_status ?? null, updated_at: new Date().toISOString() };
+  const mmuGate = integerIndex(raw?.mmu_gate);
+  const amsUnit = integerIndex(raw?.ams_unit);
+  const amsSlot = integerIndex(raw?.ams_slot);
+  const remainingPercent = raw?.remaining_percent === undefined || raw?.remaining_percent === null || raw?.remaining_percent === '' ? null : Number(raw.remaining_percent);
+  const source = mmuGate !== null ? `impressora · MMU ${mmuGate}` : Number.isInteger(amsUnit) && Number.isInteger(amsSlot) ? `impressora · AMS ${amsUnit + 1} Slot ${amsSlot + 1}` : 'impressora';
+  return { slot, label: materialSlotLabel(system, slot), spool_id: null, material, color, color_hex: hex, remaining_weight: Number.isFinite(Number(raw?.remaining_weight ?? raw?.remaining ?? raw?.weight)) ? Number(raw.remaining_weight ?? raw.remaining ?? raw.weight) : null, remaining_percent: Number.isFinite(remainingPercent) ? Math.max(0, Math.min(100, remainingPercent)) : null, source, mmu_gate: mmuGate, ams_unit: Number.isInteger(amsUnit) ? amsUnit : null, ams_slot: Number.isInteger(amsSlot) ? amsSlot : null, reported_spool_id: raw?.spool_id ?? null, gate_status: raw?.gate_status ?? null, updated_at: new Date().toISOString() };
 }
 function reportedSlotEntries(source) {
   if (Array.isArray(source)) return source;
@@ -917,9 +930,115 @@ async function moonrakerReportedMaterialSlots(printer) {
   }
   return [];
 }
+function bambuAmsUnits(report) {
+  const candidates = [report?.print?.ams, report?.ams, report?.print?.ams_status];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate?.ams)) return candidate.ams;
+    if (Array.isArray(candidate?.modules)) return candidate.modules;
+    if (Array.isArray(candidate)) return candidate;
+  }
+  return [];
+}
+function bambuReportedMaterialSlots(report) {
+  const slots = [];
+  bambuAmsUnits(report).forEach((unit, unitIndex) => {
+    const trays = Array.isArray(unit?.tray) ? unit.tray : Array.isArray(unit?.trays) ? unit.trays : [];
+    trays.forEach((tray, trayIndex) => {
+      const material = clean(tray?.tray_type || tray?.material || tray?.filament_type, 80);
+      const rawColor = clean(tray?.tray_color || tray?.color || tray?.colour, 80);
+      const color = colorHex(rawColor) || rawColor;
+      // A tray without material is still useful: it keeps the four physical
+      // AMS Lite slots in the same order in the portal.
+      slots.push(normalizedReportedSlot({
+        slot: (unitIndex * 4) + trayIndex + 1,
+        ams_unit: unitIndex,
+        ams_slot: trayIndex,
+        material,
+        color,
+        color_hex: color,
+        remaining_percent: tray?.remain,
+        spool_id: tray?.spool_id || tray?.tray_id || null,
+      }, (unitIndex * 4) + trayIndex + 1, 'ams') || {
+        slot: (unitIndex * 4) + trayIndex + 1,
+        label: materialSlotLabel('ams', (unitIndex * 4) + trayIndex + 1),
+        spool_id: null,
+        material: '',
+        color: '',
+        color_hex: '',
+        remaining_weight: null,
+        remaining_percent: tray?.remain === undefined ? null : Number(tray.remain),
+        source: `impressora · AMS ${unitIndex + 1} Slot ${trayIndex + 1}`,
+        ams_unit: unitIndex,
+        ams_slot: trayIndex,
+        reported_spool_id: tray?.spool_id || tray?.tray_id || null,
+        updated_at: new Date().toISOString(),
+      });
+    });
+  });
+  return slots;
+}
+function mqttLibrary() {
+  // Loading lazily keeps the local test suite independent of the Docker image.
+  try { return require('mqtt'); } catch { return null; }
+}
+async function bambuLocalReport(printer) {
+  const mqtt = mqttLibrary();
+  const host = printerHost(printer);
+  const serial = clean(printer.serial_number, 160);
+  const accessCode = clean(printer.api_key, 200);
+  if (!mqtt || !host || !serial || !accessCode) return null;
+  const cacheKey = `${host}:${serial}`;
+  const cached = bambuReportCache.get(cacheKey);
+  if (cached && Date.now() - cached.received_at < 8000) return cached.report;
+
+  return new Promise((resolve) => {
+    let clientConnection; let settled = false; let latestReport = null; let reportTimer = null;
+    const finish = (report = latestReport) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout); clearTimeout(reportTimer);
+      try { clientConnection?.end(true); } catch { /* Connection may not have started. */ }
+      if (report) bambuReportCache.set(cacheKey, { received_at: Date.now(), report });
+      resolve(report || null);
+    };
+    const timeout = setTimeout(() => finish(), 5000);
+    try {
+      clientConnection = mqtt.connect(`mqtts://${host}:8883`, {
+        username: 'bblp', password: accessCode, rejectUnauthorized: false,
+        reconnectPeriod: 0, connectTimeout: 4000, clean: true,
+        clientId: `c3dhub_${crypto.randomBytes(6).toString('hex')}`,
+      });
+      const reportTopic = `device/${serial}/report`;
+      clientConnection.once('connect', () => {
+        clientConnection.subscribe(reportTopic, (error) => {
+          if (error) return finish(null);
+          clientConnection.publish(`device/${serial}/request`, JSON.stringify({
+            pushing: { sequence_id: String(Date.now()), command: 'pushall', version: 1, push_target: 1 },
+          }));
+        });
+      });
+      clientConnection.on('message', (topic, payload) => {
+        if (topic !== reportTopic) return;
+        try {
+          const report = JSON.parse(payload.toString('utf8'));
+          if (!report?.print) return;
+          latestReport = report;
+          clearTimeout(reportTimer);
+          // A pushall response can arrive in adjacent MQTT packets. A very
+          // short delay captures the complete AMS state without slowing refresh.
+          reportTimer = setTimeout(() => finish(), 180);
+        } catch { /* Ignore malformed telemetry and wait for the next packet. */ }
+      });
+      clientConnection.once('error', () => finish(null));
+    } catch { finish(null); }
+  });
+}
 function printerMaterialProfile(value, printer, reportedSlots = []) {
-  const system = normalizeMaterialSystem(printer.material_system || inferMaterialSystem(printer));
-  const slotCount = materialSlotCount(system, printer.material_slot_count);
+  const configuredSystem = normalizeMaterialSystem(printer.material_system || inferMaterialSystem(printer));
+  const automaticAms = reportedSlots.some((slot) => integerIndex(slot?.ams_unit) !== null && integerIndex(slot?.ams_slot) !== null);
+  const system = configuredSystem === 'single' && automaticAms ? 'ams' : configuredSystem;
+  const automaticSlots = reportedSlots.length ? Math.max(...reportedSlots.map((slot) => Number(slot.slot) || 0)) : 0;
+  const slotCount = system === 'ams' && automaticAms ? Math.max(4, materialSlotCount(system, printer.material_slot_count), automaticSlots) : materialSlotCount(system, printer.material_slot_count);
   const manual = new Map(manualPrinterSlots(value, printer).map((slot) => [Number(slot.slot), slot]));
   const reported = new Map(reportedSlots.map((slot) => [Number(slot.slot), slot]));
   const slots = [];
@@ -975,8 +1094,27 @@ async function directPrinterStatus(printer, value) {
       await client.get(printerEndpoint(printer, '/info', 18910), { timeout: 3500 });
       return { ...printer, status: 'ONLINE', job_name: null, job_progress: 0, job_time_remaining: null, material_profile: localProfile(), checked_at: new Date().toISOString() };
     }
-    if (printer.type === 'creality' || printer.type === 'elegoo-centauri' || printer.type === 'elegoo-centauri2' || printer.type === 'bambu') {
-      const port = printer.type === 'creality' ? 9999 : printer.type.startsWith('elegoo') ? 3030 : 8883;
+    if (printer.type === 'bambu') {
+      const telemetry = await bambuLocalReport(printer);
+      if (telemetry?.print) {
+        const print = telemetry.print;
+        const reportedSlots = bambuReportedMaterialSlots(telemetry);
+        const printerWithAms = reportedSlots.length ? { ...printer, material_system: 'ams', material_slot_count: Math.max(4, reportedSlots.length) } : printer;
+        return {
+          ...printer,
+          status: canonicalState(print.gcode_state || print.print_status || print.state),
+          job_name: clean(print.gcode_file || print.subtask_name || print.task_name, 255) || null,
+          job_progress: Number(print.mc_percent ?? print.progress ?? 0),
+          job_time_remaining: Number(print.mc_remaining_time ?? print.remaining_time) || null,
+          material_profile: printerMaterialProfile(value, printerWithAms, reportedSlots),
+          checked_at: new Date().toISOString(),
+        };
+      }
+      const reachable = await portOpen(printerHost(printer), 8883);
+      return { ...printer, status: reachable ? 'ONLINE' : 'OFFLINE', job_name: null, job_progress: 0, job_time_remaining: null, material_profile: localProfile(), checked_at: new Date().toISOString() };
+    }
+    if (printer.type === 'creality' || printer.type === 'elegoo-centauri' || printer.type === 'elegoo-centauri2') {
+      const port = printer.type === 'creality' ? 9999 : 3030;
       const reachable = await portOpen(printerHost(printer), port);
       return { ...printer, status: reachable ? 'ONLINE' : 'OFFLINE', job_name: null, job_progress: 0, job_time_remaining: null, material_profile: localProfile(), checked_at: new Date().toISOString() };
     }
@@ -1644,8 +1782,16 @@ app.post('/api/printers/:id/materials/sync', async (req, res) => {
   const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
   if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
   const snapshot = await directPrinterStatus(printer, saved); const automaticSlots = (snapshot.material_profile?.slots || []).filter((slot) => String(slot.source || '').includes('impressora') && (slot.material || slot.color || slot.color_hex));
-  if (!automaticSlots.length) return res.status(409).json({ error: 'Esta impressora ainda não expõe os materiais dos slots pela API. Podes associá-los manualmente no portal.' });
-  const system = normalizeMaterialSystem(printer.material_system || inferMaterialSystem(printer)); const record = saved.printer_materials[String(printer.id)] || { system, slots: [], updated_at: null }; const previous = new Map((Array.isArray(record.slots) ? record.slots : []).map((slot) => [Number(slot.slot), slot]));
+  if (!automaticSlots.length) return res.status(409).json({ error: printer.type === 'bambu' ? 'Não foi possível ler o AMS pela Bambu LAN. Confirma o modo LAN, o código LAN e o número de série na ficha da impressora.' : 'Esta impressora ainda não expõe os materiais dos slots pela API. Podes associá-los manualmente no portal.' });
+  const system = normalizeMaterialSystem(snapshot.material_profile?.system || printer.material_system || inferMaterialSystem(printer));
+  const highestAutomaticSlot = Math.max(...automaticSlots.map((slot) => Number(slot.slot) || 0));
+  const slotCount = system === 'ams' ? Math.max(4, Number(printer.material_slot_count || 0), highestAutomaticSlot) : materialSlotCount(system, printer.material_slot_count);
+  if (printer.material_system !== system || Number(printer.material_slot_count || 0) !== slotCount) {
+    printer.material_system = system;
+    printer.material_slot_count = slotCount;
+    printer.updated_at = new Date().toISOString();
+  }
+  const record = saved.printer_materials[String(printer.id)] || { system, slots: [], updated_at: null }; const previous = new Map((Array.isArray(record.slots) ? record.slots : []).map((slot) => [Number(slot.slot), slot]));
   for (const automatic of automaticSlots) {
     const local = previous.get(Number(automatic.slot));
     previous.set(Number(automatic.slot), { ...automatic, spool_id: local?.spool_id || null, source: local?.spool_id ? 'associada + impressora' : 'impressora' });

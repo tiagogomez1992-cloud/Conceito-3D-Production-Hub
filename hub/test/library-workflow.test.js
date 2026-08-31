@@ -138,12 +138,17 @@ test('impressora, bobine e projeto são guardados pelo próprio portal', async (
   assert.equal(mmuProfile.body.slots[1].mmu_gate, 1);
   assert.equal(mmuProfile.body.slots[2].material, '');
 
+  const bambuPrinter = await json('/api/printers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'A1 AMS LITE', ip: '192.168.1.80', brand: 'Bambu Lab', model: 'Bambu Lab A1', type: 'bambu', api_key: '12345678', serial_number: '01S00A000000000' }) });
+  assert.equal(bambuPrinter.response.status, 201);
+  assert.equal(bambuPrinter.body.material_system, 'ams');
+  assert.equal(bambuPrinter.body.material_slot_count, 4);
+
   const project = await json('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Teste standalone' }) });
   assert.equal(project.response.status, 201);
 
   const summary = await json('/api/summary');
   assert.equal(summary.response.status, 200);
-  assert.equal(summary.body.printers.total, 3);
+  assert.equal(summary.body.printers.total, 4);
   assert.equal(summary.body.spools.total, 1);
   assert.equal(summary.body.production.projects.length, 1);
   assert.equal(summary.body.printers.items.find((item) => item.id === acePrinter.body.id).material_profile.slots[0].spool_id, spool.body.id);
