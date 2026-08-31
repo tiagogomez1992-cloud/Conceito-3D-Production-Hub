@@ -362,6 +362,8 @@ document.addEventListener('click', async (event) => {
   const open = event.target.closest('[data-open-form]'), close = event.target.closest('[data-close-form]');
   const openPrinterPage = event.target.closest('[data-open-printer]');
   const closePrinterPage = event.target.closest('[data-close-printer]');
+  const openPrinterList = event.target.closest('[data-open-printer-list]');
+  if (openPrinterList) { document.querySelector('[data-view="printers"]')?.click(); window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
   if (openPrinterPage) { openPrinterDetailPage(openPrinterPage.dataset.openPrinter); return; }
   if (closePrinterPage) { closePrinterDetailPage(); return; }
   if (open) { $(open.dataset.openForm).classList.remove('hidden'); if (open.dataset.openForm === 'printer-form') { $('printer-form').reset(); resetPrinterFormMode(); setPrinterCatalogSelection(); } if (open.dataset.openForm === 'order-form') { $('order-form').reset(); resetOrderPdfAnalysis(); } }
@@ -852,7 +854,7 @@ function setupOverviewLayout() {
   if (!overview || !fleet || !actions || $('overview-order-queue')) return;
 
   fleet.classList.add('overview-printers-panel');
-  fleet.querySelector('.panel-heading').innerHTML = '<div><p class="eyebrow">FARM</p><h2>Impressoras ativas</h2></div><span class="integration-label">Ver todas</span>';
+  fleet.querySelector('.panel-heading').innerHTML = '<div><p class="eyebrow">FARM</p><h2>Impressoras ativas</h2></div><button class="overview-link" type="button" data-open-printer-list>Ver todas</button>';
 
   const queue = document.createElement('article');
   queue.className = 'panel overview-queue-panel';
