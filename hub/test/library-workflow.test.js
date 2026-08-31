@@ -99,14 +99,27 @@ test('impressora, bobine e projeto são guardados pelo próprio portal', async (
   assert.equal(spool.response.status, 201);
   assert.equal(spool.body.filament.material, 'PETG');
 
+  const acePrinter = await json('/api/printers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'S1 MAX ACE', ip: '127.0.0.1', brand: 'Anycubic', model: 'Anycubic Kobra S1 Max', type: 'klipper', material_system: 'ace', material_slot_count: 4 }) });
+  assert.equal(acePrinter.response.status, 201);
+  assert.equal(acePrinter.body.material_system, 'ace');
+  const slot = await json(`/api/printers/${acePrinter.body.id}/material-slots/1`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ spool_id: spool.body.id }) });
+  assert.equal(slot.response.status, 200);
+  assert.equal(slot.body.system, 'ace');
+  assert.equal(slot.body.slots[0].spool_id, spool.body.id);
+  assert.equal(slot.body.slots.length, 4);
+  const materialProfile = await json(`/api/printers/${acePrinter.body.id}/materials`);
+  assert.equal(materialProfile.response.status, 200);
+  assert.equal(materialProfile.body.slots[0].material, 'PETG');
+
   const project = await json('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Teste standalone' }) });
   assert.equal(project.response.status, 201);
 
   const summary = await json('/api/summary');
   assert.equal(summary.response.status, 200);
-  assert.equal(summary.body.printers.total, 1);
+  assert.equal(summary.body.printers.total, 2);
   assert.equal(summary.body.spools.total, 1);
   assert.equal(summary.body.production.projects.length, 1);
+  assert.equal(summary.body.printers.items.find((item) => item.id === acePrinter.body.id).material_profile.slots[0].spool_id, spool.body.id);
 
   const deniedDisplay = await json('/api/display/status');
   assert.equal(deniedDisplay.response.status, 401);

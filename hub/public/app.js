@@ -57,17 +57,29 @@ function setPrinterCatalogSelection(brand = '', model = '') {
   brandInput.value = brand && Object.hasOwn(printerCatalog, brand) ? brand : '';
   updatePrinterModelOptions(model);
 }
+function setPrinterMaterialSystem(system = 'single', slots = 4) {
+  const input = $('printer-material-system'); const wrap = $('printer-material-slot-count-wrap'); const count = $('printer-material-slot-count');
+  input.value = ['single', 'ams', 'ace'].includes(system) ? system : 'single';
+  const multi = input.value !== 'single';
+  wrap.classList.toggle('hidden', !multi); count.disabled = !multi; count.value = multi ? Math.max(1, Math.min(16, Number(slots) || 4)) : 1;
+}
 function setupPrinterCatalog() {
-  const brand = $('printer-brand'); const model = $('printer-model');
+  const brand = $('printer-brand'); const model = $('printer-model'); const materialSystem = $('printer-material-system');
   brand.innerHTML = ['<option value="">Selecionar marca</option>', ...Object.keys(printerCatalog).map((entry) => `<option value="${escape(entry)}">${escape(entry)}</option>`)].join('');
   updatePrinterModelOptions();
   brand.addEventListener('change', () => updatePrinterModelOptions());
-  model.addEventListener('change', () => setCustomPrinterModel(model.value === customModelValue));
+  model.addEventListener('change', () => {
+    setCustomPrinterModel(model.value === customModelValue);
+    const fingerprint = `${brand.value || ''} ${model.value || ''}`.toLowerCase();
+    if (fingerprint.includes('anycubic') && /(?:kobra\s*)?s1/.test(fingerprint)) setPrinterMaterialSystem('ace', 4);
+  });
+  materialSystem.addEventListener('change', () => setPrinterMaterialSystem(materialSystem.value, $('printer-material-slot-count').value));
 }
 function resetPrinterFormMode() {
   editingPrinterId = null;
   const form = $('printer-form');
   form.querySelector('button[type="submit"]').textContent = 'Adicionar impressora';
+  setPrinterMaterialSystem();
 }
 function openPrinterEditor(printerId) {
   const printer = latest.printers.find((item) => Number(item.id) === Number(printerId));
@@ -80,6 +92,7 @@ function openPrinterEditor(printerId) {
   form.querySelector('[name="api_key"]').value = printer.api_key || '';
   form.querySelector('[name="serial_number"]').value = printer.serial_number || '';
   form.querySelector('[name="group_name"]').value = printer.group_name || '';
+  setPrinterMaterialSystem(printer.material_profile?.system || printer.material_system || 'single', printer.material_profile?.slot_count || printer.material_slot_count || 4);
   setPrinterCatalogSelection(printer.brand || 'Outra / personalizada', printer.model || '');
   form.querySelector('button[type="submit"]').textContent = 'Guardar alterações';
   form.classList.remove('hidden');
@@ -87,11 +100,34 @@ function openPrinterEditor(printerId) {
 }
 function toast(message, kind = 'success') { const t = $('toast'); t.textContent = message; t.className = `toast show ${kind}`; clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.className = 'toast'; }, 4200); }
 async function api(url, options = {}) { const r = await fetch(url, options); const body = await r.json().catch(() => ({})); if (!r.ok) throw new Error(body.error || 'O pedido não foi aceite.'); return body; }
-function selectOptions(selected) { return ['<option value="">Sem bobine atribuída</option>', ...latest.spools.map((s) => `<option value="${s.id}" ${Number(selected) === Number(s.id) ? 'selected' : ''}>#${s.id} · ${escape(spoolInfo(s).material)} · ${spoolInfo(s).remaining} g</option>`)].join(''); }
+function selectOptions(selected) { return ['<option value="">Sem bobine associada</option>', ...latest.spools.map((s) => `<option value="${s.id}" ${Number(selected) === Number(s.id) ? 'selected' : ''}>#${s.id} · ${escape(spoolInfo(s).material)} ${escape(s.color_name || s.color || '')} · ${spoolInfo(s).remaining} g</option>`)].join(''); }
 
 function assigned(printerId) {
   const spoolId = latest.assignments?.[String(printerId)]?.spool_id;
   return latest.spools.find((spool) => Number(spool.id) === Number(spoolId)) || null;
+}
+
+function materialProfile(printer) {
+  const profile = printer.material_profile || {};
+  if (Array.isArray(profile.slots) && profile.slots.length) return profile;
+  const spool = assigned(printer.id);
+  return { system: printer.material_system || 'single', label: 'Bobine única', slot_count: 1, automatic: false, slots: [{ slot: 1, label: 'Extrusor', spool_id: spool?.id || null, material: spool ? spoolInfo(spool).material : '', color: spool?.color_name || spool?.color || '', color_hex: spool?.filament?.color_hex || '', remaining_weight: spool ? spoolInfo(spool).remaining : null, source: 'manual' }] };
+}
+function materialSystemText(system) { return system === 'ams' ? 'AMS' : system === 'ace' ? 'ACE' : 'Bobine única'; }
+function materialSlotText(slot) {
+  if (!slot?.spool_id && !slot?.material && !slot?.color) return 'Sem material associado';
+  const source = slot.spool_id ? `#${slot.spool_id} · ` : '';
+  const grams = Number(slot.remaining_weight);
+  return `${source}${slot.material || 'Material'}${slot.color ? ` ${slot.color}` : ''}${Number.isFinite(grams) ? ` · ${Math.round(grams)} g` : ''}`;
+}
+function materialSlotSource(slot) {
+  if (String(slot?.source || '').includes('impressora')) return 'Lido da impressora';
+  return slot?.spool_id ? 'Associado ao inventário' : 'A configurar';
+}
+function materialPanel(printer) {
+  const profile = materialProfile(printer); const multi = profile.system !== 'single';
+  const slots = (profile.slots || []).slice(0, profile.slot_count || 1);
+  return `<section class="material-panel ${multi ? 'multi' : 'single'}"><div class="material-panel-heading"><div><p class="eyebrow">MATERIAL CARREGADO</p><strong>${escape(profile.label || materialSystemText(profile.system))}</strong></div><span class="material-source ${profile.automatic ? 'automatic' : ''}">${profile.automatic ? 'Sincronização disponível' : 'Gestão no portal'}</span></div><div class="material-slot-grid">${slots.map((slot) => { const paint = /^#[0-9a-f]{6}$/i.test(String(slot.color_hex || '')) ? slot.color_hex : '#374049'; return `<div class="material-slot"><div class="material-slot-title"><span class="material-swatch" style="--slot-color:${escape(paint)}"></span><div><strong>${escape(slot.label || `Slot ${slot.slot}`)}</strong><small>${escape(materialSlotSource(slot))}</small></div></div><span class="material-slot-value">${escape(materialSlotText(slot))}</span><label>Bobine do inventário<select data-material-slot-printer="${printer.id}" data-material-slot="${slot.slot}">${selectOptions(slot.spool_id)}</select></label>${slot.spool_id ? `<button class="compact secondary" data-consume="${printer.id}" data-spool="${slot.spool_id}">Registar consumo</button>` : ''}</div>`; }).join('')}</div><div class="material-panel-actions"><button class="compact" data-save-material-slots="${printer.id}">Guardar material carregado</button>${multi ? `<button class="compact secondary" data-sync-material-slots="${printer.id}">Sincronizar ${escape(materialSystemText(profile.system))}</button>` : ''}</div></section>`;
 }
 
 function renderPrinters(items) {
@@ -100,8 +136,8 @@ function renderPrinters(items) {
     return `<div class="printer-row"><span class="status ${statusClass(p.status)}"></span><div class="printer-name"><strong>${value(p.name, 'Sem nome')}</strong><small>${value(p.model || p.type, 'Impressora')}</small></div><div class="job"><strong>${value(p.job_name, 'Sem trabalho ativo')}</strong><small>${progress ? `${Math.round(progress)}%` : value(p.status)}</small></div><span class="badge ${statusClass(p.status)}">${value(p.status)}</span></div>`;
   }).join('') : '<p class="empty">Ainda não há impressoras configuradas.</p>';
   $('printer-grid').innerHTML = items.length ? items.map((p) => {
-    const spool = assigned(p.id); const assignment = latest.assignments?.[String(p.id)];
-    return `<article class="machine-card"><div class="machine-top"><div><span class="status ${statusClass(p.status)}"></span><strong>${value(p.name, 'Sem nome')}</strong></div><span class="badge ${statusClass(p.status)}">${value(p.status)}</span></div><dl><div><dt>Marca</dt><dd>${value(p.brand, 'Não indicada')}</dd></div><div><dt>Modelo</dt><dd>${value(p.model)}</dd></div><div><dt>Ligação</dt><dd>${escape(p.type || '—')}</dd></div><div><dt>Trabalho</dt><dd>${value(p.job_name, 'Sem trabalho ativo')}</dd></div><div><dt>Bobine</dt><dd>${spool ? `#${spool.id} · ${escape(spoolInfo(spool).material)} · ${spoolInfo(spool).remaining} g` : 'Não atribuída'}</dd></div></dl><div class="machine-actions"><label>Trocar bobine<select data-printer="${p.id}">${selectOptions(assignment?.spool_id)}</select></label><button class="compact" data-save-assignment="${p.id}">Guardar</button>${spool ? `<button class="compact secondary" data-consume="${p.id}" data-spool="${spool.id}">Registar consumo</button>` : ''}<button class="compact secondary" data-edit-printer="${p.id}">Editar</button><button class="compact danger" data-delete-printer="${p.id}" data-printer-name="${escape(p.name)}">Remover</button></div></article>`;
+    const profile = materialProfile(p); const loaded = (profile.slots || []).filter((slot) => slot.spool_id || slot.material).length;
+    return `<article class="machine-card"><div class="machine-top"><div><span class="status ${statusClass(p.status)}"></span><strong>${value(p.name, 'Sem nome')}</strong></div><span class="badge ${statusClass(p.status)}">${value(p.status)}</span></div><dl><div><dt>Marca</dt><dd>${value(p.brand, 'Não indicada')}</dd></div><div><dt>Modelo</dt><dd>${value(p.model)}</dd></div><div><dt>Ligação</dt><dd>${escape(p.type || '—')}</dd></div><div><dt>Trabalho</dt><dd>${value(p.job_name, 'Sem trabalho ativo')}</dd></div><div><dt>Sistema de material</dt><dd>${escape(materialSystemText(profile.system))} · ${loaded}/${profile.slot_count || 1} carregado(s)</dd></div></dl>${materialPanel(p)}<div class="machine-actions"><button class="compact secondary" data-edit-printer="${p.id}">Editar impressora</button><button class="compact danger" data-delete-printer="${p.id}" data-printer-name="${escape(p.name)}">Remover</button></div></article>`;
   }).join('') : '<p class="empty">Ainda não há impressoras configuradas.</p>';
 }
 function normalizedPrinterAddress(value) {
@@ -271,6 +307,23 @@ document.addEventListener('click', async (event) => {
       const summary = `${result.linked.length} peça(s) preparada(s)${result.review.length ? ` · ${result.review.length} para rever` : ''}${result.unmatched.length ? ` · ${result.unmatched.length} sem correspondência` : ''}`;
       toast(summary); await update();
     } catch (error) { toast(error.message, 'error'); prepareWithAssistant.disabled = false; prepareWithAssistant.textContent = originalText; }
+  }
+  const saveMaterialSlots = event.target.closest('[data-save-material-slots]');
+  if (saveMaterialSlots) {
+    const printerId = saveMaterialSlots.dataset.saveMaterialSlots; const fields = [...document.querySelectorAll(`[data-material-slot-printer="${printerId}"]`)];
+    saveMaterialSlots.disabled = true; const originalLabel = saveMaterialSlots.textContent; saveMaterialSlots.textContent = 'A guardar…';
+    try {
+      for (const field of fields) await api(`/api/printers/${printerId}/material-slots/${field.dataset.materialSlot}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ spool_id: field.value || '' }) });
+      toast(fields.length > 1 ? 'Slots de material atualizados.' : 'Material carregado atualizado.'); await update();
+    } catch (error) { toast(error.message, 'error'); }
+    finally { saveMaterialSlots.disabled = false; saveMaterialSlots.textContent = originalLabel; }
+  }
+  const syncMaterialSlots = event.target.closest('[data-sync-material-slots]');
+  if (syncMaterialSlots) {
+    syncMaterialSlots.disabled = true; const originalLabel = syncMaterialSlots.textContent; syncMaterialSlots.textContent = 'A sincronizar…';
+    try { const result = await api(`/api/printers/${syncMaterialSlots.dataset.syncMaterialSlots}/materials/sync`, { method: 'POST' }); toast(result.message || 'Slots sincronizados com a impressora.'); await update(); }
+    catch (error) { toast(error.message, 'error'); }
+    finally { syncMaterialSlots.disabled = false; syncMaterialSlots.textContent = originalLabel; }
   }
   const save = event.target.closest('[data-save-assignment]'); if (save) { const id = save.dataset.saveAssignment, selected = document.querySelector(`[data-printer="${id}"]`).value; try { if (selected) await api('/api/assignments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: id, spool_id: selected }) }); else await fetch(`/api/assignments/${id}`, { method: 'DELETE' }); toast('Bobine atualizada.'); update(); } catch (error) { toast(error.message, 'error'); } }
   const use = event.target.closest('[data-consume]'); if (use) { const grams = prompt('Gramas consumidos:', '0'); if (Number(grams) > 0) try { await api('/api/consume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: use.dataset.consume, spool_id: use.dataset.spool, grams: Number(grams) }) }); toast('Consumo registado.'); update(); } catch (error) { toast(error.message, 'error'); } }

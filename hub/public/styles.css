@@ -76,6 +76,29 @@ header::after { content:"SHAPING TOMORROW.\A LAYER BY LAYER."; white-space:pre; 
 @media (max-width:980px) { .shell { margin-left:0; padding:96px 22px 42px; } header { width:100%; height:66px; display:flex; align-items:center; padding:8px 18px; border-right:0; border-bottom:1px solid #2d3236; } header .brand { min-height:0; } header .brand::before { font-size:1.3rem; line-height:.74; width:52px; } header .brand::after { left:57px; top:1px; width:25px; height:55px; } header::before,header::after { display:none; } .live { top:16px; right:18px; } .tabs { top:66px; bottom:auto; width:100%; height:48px; display:flex; flex-direction:row; overflow-x:auto; padding:4px 12px; border-bottom:1px solid #2d3236; background:#0c0e10; } .tab { width:auto; min-width:max-content; min-height:36px; } .tab::before { display:none; } body::after { display:none; } }
 @media (max-width:700px) { .shell { padding:126px 14px 34px; }.live { display:none; }.stats { grid-template-columns:repeat(2,minmax(0,1fr)); }.grid { grid-template-columns:1fr; }.hero { min-height:0; }.hero::after { display:none; }.hero h1 { font-size:2.8rem; }.section-heading { align-items:start; flex-direction:column; } }
 
+/* Material físico por impressora: bobine única, AMS ou ACE. */
+.material-panel { margin-top:18px; padding:14px; border:1px solid #303a41; border-radius:7px; background:#101417; }
+.material-panel-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:12px; }
+.material-panel-heading .eyebrow { margin-bottom:3px; font-size:.62rem; }
+.material-panel-heading strong { font-size:.82rem; text-transform:uppercase; letter-spacing:.04em; }
+.material-source { padding:4px 7px; border:1px solid #3b444b; border-radius:4px; color:#aeb8be; font-size:.64rem; white-space:nowrap; }
+.material-source.automatic { border-color:#166ac2; color:#54a8ff; }
+.material-slot-grid { display:grid; grid-template-columns:1fr; gap:8px; }
+.material-panel.multi .material-slot-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.material-slot { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:7px 10px; padding:10px; border:1px solid #2c353b; border-radius:5px; background:#14191c; }
+.material-slot-title { display:flex; align-items:center; min-width:0; gap:8px; }
+.material-slot-title strong,.material-slot-title small { display:block; }
+.material-slot-title strong { font-size:.76rem; }
+.material-slot-title small { margin-top:2px; color:#89939a; font-size:.63rem; }
+.material-swatch { width:16px; height:16px; flex:0 0 16px; border:2px solid #657078; border-radius:50%; background:var(--slot-color,#374049); box-shadow:inset 0 0 0 3px #101417; }
+.material-slot-value { min-width:0; align-self:center; color:#d7dde1; font-size:.69rem; text-align:right; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.material-slot label { grid-column:1/-1; display:grid; grid-template-columns:116px minmax(0,1fr); align-items:center; gap:7px; color:#9da8af; font-size:.63rem; text-transform:uppercase; letter-spacing:.05em; }
+.material-slot select { width:100%; min-width:0; background:#090c0e; border:1px solid #3a444c; border-radius:4px; color:#f5f5f2; padding:7px; font:inherit; text-transform:none; letter-spacing:normal; }
+.material-slot .compact { grid-column:1/-1; justify-self:start; padding:5px 7px; font-size:.66rem; }
+.material-panel-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:11px; }
+.material-panel-actions .compact { padding:7px 9px; font-size:.68rem; }
+@media (max-width:700px) { .material-panel.multi .material-slot-grid { grid-template-columns:1fr; }.material-slot label { grid-template-columns:1fr; gap:4px; }.material-slot-value { text-align:left; } }
+
 /* Layout refinement: align the real dashboard with the approved Production Hub render. */
 @media (min-width:981px) {
   .shell {

@@ -52,7 +52,7 @@ app.use(express.json({ limit: '256kb' }));
 function emptyState() {
   return {
     assignments: {}, consumption: [], orders: [], customers: [], document_learning: [], files: [], library_parts: [],
-    printers: [], spools: [], projects: [], parts: [], production_gcodes: [], jobs: [],
+    printers: [], spools: [], printer_materials: {}, projects: [], parts: [], production_gcodes: [], jobs: [],
   };
 }
 function libraryPartName(value) { return clean(value, 120).replace(/\s+/g, ' ').toLocaleUpperCase('pt-PT'); }
@@ -68,11 +68,12 @@ function migrateState(raw) {
   value.library_parts = Array.isArray(value.library_parts) ? value.library_parts : [];
   value.printers = Array.isArray(value.printers) ? value.printers : [];
   value.spools = Array.isArray(value.spools) ? value.spools : [];
+  value.printer_materials = value.printer_materials && typeof value.printer_materials === 'object' && !Array.isArray(value.printer_materials) ? value.printer_materials : {};
   value.projects = Array.isArray(value.projects) ? value.projects : [];
   value.parts = Array.isArray(value.parts) ? value.parts : [];
   value.production_gcodes = Array.isArray(value.production_gcodes) ? value.production_gcodes : [];
   value.jobs = Array.isArray(value.jobs) ? value.jobs : [];
-  let changed = !Array.isArray(raw?.document_learning) || !Array.isArray(raw?.library_parts) || !Array.isArray(raw?.printers) || !Array.isArray(raw?.spools) || !Array.isArray(raw?.projects) || !Array.isArray(raw?.parts) || !Array.isArray(raw?.production_gcodes) || !Array.isArray(raw?.jobs);
+  let changed = !Array.isArray(raw?.document_learning) || !Array.isArray(raw?.library_parts) || !Array.isArray(raw?.printers) || !Array.isArray(raw?.spools) || !raw?.printer_materials || typeof raw.printer_materials !== 'object' || Array.isArray(raw.printer_materials) || !Array.isArray(raw?.projects) || !Array.isArray(raw?.parts) || !Array.isArray(raw?.production_gcodes) || !Array.isArray(raw?.jobs);
   const usedNames = new Set(value.library_parts.map((part) => libraryPartName(part.name)).filter(Boolean));
 
   for (const part of value.library_parts) {
@@ -100,6 +101,15 @@ function migrateState(raw) {
         byPart.set(file.part_id, { part_id: file.part_id, requested_quantity: entry.requested_quantity, selected_file_id: file.id });
       }
       order.library_parts = [...byPart.values()]; changed = true;
+    }
+  }
+  for (const printer of value.printers) {
+    const materialSystem = normalizeMaterialSystem(printer.material_system || inferMaterialSystem(printer));
+    const slotCount = materialSlotCount(materialSystem, printer.material_slot_count);
+    if (printer.material_system !== materialSystem || Number(printer.material_slot_count || 0) !== slotCount) {
+      printer.material_system = materialSystem;
+      printer.material_slot_count = slotCount;
+      changed = true;
     }
   }
   return { value, changed };
@@ -771,45 +781,183 @@ function canonicalState(value) {
   if (/idle|ready|operational|standby/.test(stateValue)) return 'IDLE';
   return 'UNKNOWN';
 }
-async function directPrinterStatus(printer) {
-  const unavailable = { ...printer, status: 'OFFLINE', job_name: null, job_progress: 0, job_time_remaining: null, checked_at: new Date().toISOString() };
+function normalizeMaterialSystem(value) {
+  const system = clean(value, 24).toLowerCase();
+  return ['single', 'ams', 'ace'].includes(system) ? system : 'single';
+}
+function inferMaterialSystem(printer = {}) {
+  const fingerprint = `${printer.type || ''} ${printer.brand || ''} ${printer.model || ''}`.toLowerCase();
+  if (/anycubic/.test(fingerprint) && /(?:kobra\s*)?s1/.test(fingerprint)) return 'ace';
+  return 'single';
+}
+function materialSlotCount(system, rawCount) {
+  if (system === 'single') return 1;
+  const count = Math.floor(Number(rawCount));
+  return Number.isInteger(count) && count >= 1 && count <= 16 ? count : 4;
+}
+function materialSystemLabel(system) {
+  return system === 'ams' ? 'AMS' : system === 'ace' ? 'ACE' : 'Bobine única';
+}
+function materialSlotLabel(system, index) {
+  return system === 'ams' ? `AMS ${index}` : system === 'ace' ? `ACE ${index}` : 'Extrusor';
+}
+function normalizedMaterial(value) {
+  return clean(value, 80).toLocaleUpperCase('pt-PT').replace(/[\s_-]+/g, ' ');
+}
+function normalizedColor(value) {
+  return clean(value, 80).toLocaleUpperCase('pt-PT').replace(/[\s_-]+/g, ' ');
+}
+function colorHex(value) {
+  const candidate = clean(value, 24).replace(/^#/, '');
+  return /^[0-9a-f]{6}$/i.test(candidate) ? `#${candidate.toUpperCase()}` : '';
+}
+function materialIsCompatible(slot, requiredMaterial, requiredColor) {
+  const material = normalizedMaterial(requiredMaterial);
+  const color = normalizedColor(requiredColor);
+  if (!material && !color) return true;
+  if (!slot || (!slot.spool_id && !slot.material)) return false;
+  const actualMaterial = normalizedMaterial(slot.material);
+  const actualColor = normalizedColor(slot.color);
+  return (!material || actualMaterial === material) && (!color || actualColor === color);
+}
+function manualPrinterSlots(value, printer) {
+  const record = value?.printer_materials?.[String(printer.id)];
+  return Array.isArray(record?.slots) ? record.slots : [];
+}
+function slotFromSpool(spool, slot, system, source = 'manual') {
+  if (!spool) return { slot, label: materialSlotLabel(system, slot), spool_id: null, material: '', color: '', color_hex: '', remaining_weight: null, source, updated_at: new Date().toISOString() };
+  return {
+    slot,
+    label: materialSlotLabel(system, slot),
+    spool_id: Number(spool.id),
+    material: clean(spool.material, 80),
+    color: clean(spool.color_name || spool.color, 80),
+    color_hex: colorHex(spool.color_hex),
+    remaining_weight: Math.max(0, Number(spool.remaining_weight ?? spool.initial_weight ?? 0)),
+    source,
+    updated_at: new Date().toISOString(),
+  };
+}
+function normalizedReportedSlot(raw, fallbackSlot, system) {
+  const slot = Math.max(1, Math.floor(Number(raw?.slot ?? raw?.index ?? raw?.id ?? fallbackSlot) || fallbackSlot));
+  const material = clean(raw?.material || raw?.type || raw?.filament_type || raw?.filament || raw?.name, 80);
+  const color = clean(raw?.color || raw?.colour || raw?.color_name, 80);
+  const hex = colorHex(raw?.color_hex || raw?.hex || color);
+  if (!material && !color && !hex) return null;
+  return { slot, label: materialSlotLabel(system, slot), spool_id: null, material, color, color_hex: hex, remaining_weight: Number.isFinite(Number(raw?.remaining_weight ?? raw?.remaining ?? raw?.weight)) ? Number(raw.remaining_weight ?? raw.remaining ?? raw.weight) : null, source: 'impressora', updated_at: new Date().toISOString() };
+}
+function reportedSlotEntries(source) {
+  if (Array.isArray(source)) return source;
+  if (!source || typeof source !== 'object') return [];
+  for (const key of ['slots', 'lanes', 'trays', 'materials', 'filaments', 'data']) if (Array.isArray(source[key])) return source[key];
+  return Object.entries(source).map(([slot, value]) => value && typeof value === 'object' ? { slot: Number(slot) + (Number(slot) === 0 ? 1 : 0), ...value } : null).filter(Boolean);
+}
+function moonrakerMaterialSlots(status, printer) {
+  const system = normalizeMaterialSystem(printer.material_system || inferMaterialSystem(printer));
+  if (system === 'single') return [];
+  const candidates = [status?.lane_data, status?.ace, status?.ace_data, status?.ams, status?.material_slots];
+  for (const candidate of candidates) {
+    const slots = reportedSlotEntries(candidate).map((entry, index) => normalizedReportedSlot(entry, index + 1, system)).filter(Boolean);
+    if (slots.length) return slots;
+  }
+  return [];
+}
+async function moonrakerReportedMaterialSlots(printer) {
+  const system = normalizeMaterialSystem(printer.material_system || inferMaterialSystem(printer));
+  if (system === 'single') return [];
+  // These objects are optional extensions. Query them individually so a normal
+  // Klipper installation never becomes OFFLINE just because it lacks ACE/AMS data.
+  for (const objectName of ['lane_data', 'ace', 'ace_data', 'ams', 'material_slots']) {
+    try {
+      const response = await client.get(printerEndpoint(printer, `/printer/objects/query?${objectName}`, 7125), { timeout: 1800 });
+      const slots = moonrakerMaterialSlots(response.data?.result?.status || {}, printer);
+      if (slots.length) return slots;
+    } catch { /* Optional object not present on this firmware. */ }
+  }
+  return [];
+}
+function printerMaterialProfile(value, printer, reportedSlots = []) {
+  const system = normalizeMaterialSystem(printer.material_system || inferMaterialSystem(printer));
+  const slotCount = materialSlotCount(system, printer.material_slot_count);
+  const manual = new Map(manualPrinterSlots(value, printer).map((slot) => [Number(slot.slot), slot]));
+  const reported = new Map(reportedSlots.map((slot) => [Number(slot.slot), slot]));
+  const slots = [];
+  for (let index = 1; index <= slotCount; index += 1) {
+    const local = manual.get(index); const automatic = reported.get(index);
+    let slot = { slot: index, label: materialSlotLabel(system, index), spool_id: null, material: '', color: '', color_hex: '', remaining_weight: null, source: 'manual', updated_at: null };
+    if (system === 'single') {
+      const spoolId = value?.assignments?.[String(printer.id)]?.spool_id;
+      const spool = value?.spools?.find((entry) => Number(entry.id) === Number(spoolId));
+      if (spool) slot = slotFromSpool(spool, index, system);
+    }
+    if (local) slot = { ...slot, ...local, slot: index, label: materialSlotLabel(system, index) };
+    if (automatic) slot = { ...slot, ...automatic, spool_id: local?.spool_id || slot.spool_id || null, label: materialSlotLabel(system, index), source: local?.spool_id ? 'associada + impressora' : 'impressora' };
+    const linkedSpool = value?.spools?.find((entry) => Number(entry.id) === Number(slot.spool_id));
+    if (linkedSpool) slot = { ...slotFromSpool(linkedSpool, index, system, slot.source), ...slot, spool_id: Number(linkedSpool.id), label: materialSlotLabel(system, index), remaining_weight: Math.max(0, Number(linkedSpool.remaining_weight ?? linkedSpool.initial_weight ?? 0)) };
+    slots.push(slot);
+  }
+  return { system, label: materialSystemLabel(system), slot_count: slotCount, slots, synced_at: reportedSlots.length ? new Date().toISOString() : null, automatic: Boolean(reportedSlots.length) };
+}
+function gcodeMaterialCompatibility(value, printer, gcode) {
+  const profile = printer.material_profile || printerMaterialProfile(value, printer);
+  const matches = profile.slots.filter((slot) => materialIsCompatible(slot, gcode.required_material, gcode.required_color));
+  return { profile, matches, compatible: matches.length > 0 };
+}
+function spoolForRequiredMaterial(value, printer, requiredMaterial, requiredColor) {
+  if (!printer) return null;
+  const profile = printerMaterialProfile(value, printer);
+  const matchingSlot = profile.slots.find((slot) => slot.spool_id && materialIsCompatible(slot, requiredMaterial, requiredColor));
+  return matchingSlot?.spool_id ? value.spools.find((spool) => Number(spool.id) === Number(matchingSlot.spool_id)) || null : null;
+}
+async function directPrinterStatus(printer, value) {
+  const localProfile = () => printerMaterialProfile(value, printer);
+  const unavailable = { ...printer, status: 'OFFLINE', job_name: null, job_progress: 0, job_time_remaining: null, material_profile: localProfile(), checked_at: new Date().toISOString() };
   try {
     if (printer.type === 'klipper') {
       const response = await client.get(printerEndpoint(printer, '/printer/objects/query?print_stats&virtual_sdcard&display_status', 7125), { timeout: 3500 });
       const status = response.data?.result?.status || {};
       const stats = status.print_stats || {}; const virtualSd = status.virtual_sdcard || {}; const display = status.display_status || {};
-      return { ...printer, status: canonicalState(stats.state), job_name: stats.filename || null, job_progress: Number(virtualSd.progress ?? display.progress ?? 0), job_time_remaining: null, checked_at: new Date().toISOString() };
+      const reportedSlots = await moonrakerReportedMaterialSlots(printer);
+      return { ...printer, status: canonicalState(stats.state), job_name: stats.filename || null, job_progress: Number(virtualSd.progress ?? display.progress ?? 0), job_time_remaining: null, material_profile: printerMaterialProfile(value, printer, reportedSlots), checked_at: new Date().toISOString() };
     }
     if (printer.type === 'octoprint') {
       const response = await client.get(printerEndpoint(printer, '/api/job'), { timeout: 3500, headers: printer.api_key ? { 'X-Api-Key': printer.api_key } : {} });
       const progress = response.data?.progress || {}; const job = response.data?.job || {};
-      return { ...printer, status: canonicalState(response.data?.state), job_name: job.file?.name || null, job_progress: Number(progress.completion || 0) / 100, job_time_remaining: Number(progress.printTimeLeft) || null, checked_at: new Date().toISOString() };
+      return { ...printer, status: canonicalState(response.data?.state), job_name: job.file?.name || null, job_progress: Number(progress.completion || 0) / 100, job_time_remaining: Number(progress.printTimeLeft) || null, material_profile: localProfile(), checked_at: new Date().toISOString() };
     }
     if (printer.type === 'prusa') {
       const response = await client.get(printerEndpoint(printer, '/api/v1/status', 80), { timeout: 3500, headers: printer.api_key ? { 'X-Api-Key': printer.api_key } : {} });
       const printerData = response.data?.printer || response.data || {}; const job = response.data?.job || {};
-      return { ...printer, status: canonicalState(printerData.state || printerData.status), job_name: job.file?.name || job.file_name || null, job_progress: Number(job.progress || printerData.progress || 0), job_time_remaining: Number(job.time_remaining || 0) || null, checked_at: new Date().toISOString() };
+      return { ...printer, status: canonicalState(printerData.state || printerData.status), job_name: job.file?.name || job.file_name || null, job_progress: Number(job.progress || printerData.progress || 0), job_time_remaining: Number(job.time_remaining || 0) || null, material_profile: localProfile(), checked_at: new Date().toISOString() };
     }
     if (printer.type === 'anycubic') {
       await client.get(printerEndpoint(printer, '/info', 18910), { timeout: 3500 });
-      return { ...printer, status: 'ONLINE', job_name: null, job_progress: 0, job_time_remaining: null, checked_at: new Date().toISOString() };
+      return { ...printer, status: 'ONLINE', job_name: null, job_progress: 0, job_time_remaining: null, material_profile: localProfile(), checked_at: new Date().toISOString() };
     }
     if (printer.type === 'creality' || printer.type === 'elegoo-centauri' || printer.type === 'elegoo-centauri2' || printer.type === 'bambu') {
       const port = printer.type === 'creality' ? 9999 : printer.type.startsWith('elegoo') ? 3030 : 8883;
       const reachable = await portOpen(printerHost(printer), port);
-      return { ...printer, status: reachable ? 'ONLINE' : 'OFFLINE', job_name: null, job_progress: 0, job_time_remaining: null, checked_at: new Date().toISOString() };
+      return { ...printer, status: reachable ? 'ONLINE' : 'OFFLINE', job_name: null, job_progress: 0, job_time_remaining: null, material_profile: localProfile(), checked_at: new Date().toISOString() };
     }
-    return { ...printer, status: 'UNKNOWN', job_name: null, job_progress: 0, job_time_remaining: null, checked_at: new Date().toISOString() };
+    return { ...printer, status: 'UNKNOWN', job_name: null, job_progress: 0, job_time_remaining: null, material_profile: localProfile(), checked_at: new Date().toISOString() };
   } catch { return unavailable; }
 }
-async function managedPrinterSnapshots(value) { return Promise.all(value.printers.map(directPrinterStatus)); }
+async function managedPrinterSnapshots(value) { return Promise.all(value.printers.map((printer) => directPrinterStatus(printer, value))); }
 function dispatchStatus(value, part, snapshots = []) {
   const variants = partProductionGcodes(value, part.id);
   if (!variants.length) return { dispatchable: false, reasons: ['A peça ainda não tem um G-code de produção.'], notes: [] };
   const compatible = snapshots.filter((printer) => variants.some((gcode) => gcode.printer_model === printer.model));
   if (!compatible.length) return { dispatchable: false, reasons: ['Não existe uma impressora registada com o modelo desta variante de G-code.'], notes: [] };
-  if (!compatible.some((printer) => printer.status === 'IDLE')) return { dispatchable: false, reasons: ['As impressoras compatíveis não estão livres neste momento.'], notes: [] };
-  return { dispatchable: true, reasons: [], notes: [] };
+  const idle = compatible.filter((printer) => printer.status === 'IDLE');
+  if (!idle.length) return { dispatchable: false, reasons: ['As impressoras compatíveis não estão livres neste momento.'], notes: [] };
+  const ready = idle.filter((printer) => partProductionGcodes(value, part.id)
+    .filter((gcode) => gcode.printer_model === printer.model)
+    .some((gcode) => gcodeMaterialCompatibility(value, printer, gcode).compatible));
+  if (!ready.length) {
+    const needs = [...new Set(partProductionGcodes(value, part.id).map((gcode) => `${gcode.required_material || 'material'}${gcode.required_color ? ` ${gcode.required_color}` : ''}`))].join(' ou ');
+    return { dispatchable: false, reasons: [`Nenhuma impressora livre tem ${needs || 'o material necessário'} carregado.`], notes: ['Atribui a bobine à impressora ou ao slot AMS/ACE antes de despachar.'] };
+  }
+  return { dispatchable: true, reasons: [], notes: ready.map((printer) => `${printer.name}: material compatível em ${printer.material_profile?.label || 'bobine'}.`) };
 }
 function localSpool(item) {
   const initial = Number(item.initial_weight || 0); const used = Number(item.used_weight || 0);
@@ -1353,16 +1501,42 @@ app.post('/api/orders/:id/complete', async (req, res) => {
   const legacyFile = getLibraryFile(saved, item.library_file_id) || item.files.find((candidate) => candidate.id === req.body?.file_id) || item.files[0];
   if (!plan.length && !legacyFile) return res.status(400).json({ error: 'Associa pelo menos um G-code da biblioteca antes de concluir a encomenda.' });
   const grams = plan.length ? plan.reduce((total, entry) => total + entry.grams, 0) : Number(legacyFile?.metadata?.filament_grams || 0);
-  const spoolId = saved.assignments[String(item.printer_id)]?.spool_id;
-  if (spoolId && grams > 0) {
-    const spool = saved.spools.find((candidate) => Number(candidate.id) === Number(spoolId));
-    if (!spool) return res.status(404).json({ error: 'A bobine atribuída já não existe no portal.' });
-    spool.used_weight = Number(spool.used_weight || 0) + grams;
+  const printer = getManagedPrinter(saved, item.printer_id);
+  const consumptionBySpool = new Map();
+  const addConsumption = (spool, amount) => {
+    if (!spool || !(Number(amount) > 0)) return;
+    const current = consumptionBySpool.get(Number(spool.id)) || { spool, grams: 0 };
+    current.grams += Number(amount);
+    consumptionBySpool.set(Number(spool.id), current);
+  };
+
+  if (plan.length) {
+    for (const entry of plan) {
+      const metadata = entry.file?.metadata || {};
+      const spool = spoolForRequiredMaterial(saved, printer, metadata.material, metadata.color)
+        || (saved.assignments[String(item.printer_id)]?.spool_id
+          ? saved.spools.find((candidate) => Number(candidate.id) === Number(saved.assignments[String(item.printer_id)].spool_id))
+          : null);
+      addConsumption(spool, entry.grams);
+    }
+  } else {
+    const spool = spoolForRequiredMaterial(saved, printer, legacyFile?.metadata?.material, legacyFile?.metadata?.color)
+      || (saved.assignments[String(item.printer_id)]?.spool_id
+        ? saved.spools.find((candidate) => Number(candidate.id) === Number(saved.assignments[String(item.printer_id)].spool_id))
+        : null);
+    addConsumption(spool, grams);
+  }
+
+  const consumed = [];
+  for (const { spool, grams: spoolGrams } of consumptionBySpool.values()) {
+    spool.used_weight = Number(spool.used_weight || 0) + spoolGrams;
     spool.remaining_weight = Math.max(0, Number(spool.initial_weight || 0) - spool.used_weight);
     spool.updated_at = new Date().toISOString();
-    saved.consumption.unshift({ spool_id: spoolId, grams, printer_id: item.printer_id, order_id: item.id, automatic: true, created_at: new Date().toISOString() });
+    const record = { spool_id: spool.id, grams: spoolGrams, printer_id: item.printer_id, order_id: item.id, automatic: true, created_at: new Date().toISOString() };
+    saved.consumption.unshift(record);
+    consumed.push({ spool_id: spool.id, grams: spoolGrams });
   }
-  item.status = 'completed'; item.updated_at = new Date().toISOString(); save(saved); res.json({ order: item, consumed_grams: grams || null, gcode_plan: plan });
+  item.status = 'completed'; item.updated_at = new Date().toISOString(); save(saved); res.json({ order: item, consumed_grams: grams || null, consumed_spools: consumed, gcode_plan: plan });
 });
 
 app.post('/api/printers/discover', async (req, res) => {
@@ -1374,7 +1548,8 @@ app.post('/api/printers', async (req, res) => {
   if (!name || !ip || !model) return res.status(400).json({ error: 'Nome, IP e modelo são obrigatórios.' });
   if (!printerConnectors.has(type)) return res.status(400).json({ error: 'O tipo de ligação da impressora não é suportado.' });
   if (saved.printers.some((printer) => printer.name.toLocaleLowerCase('pt-PT') === name.toLocaleLowerCase('pt-PT'))) return res.status(409).json({ error: 'Já existe uma impressora com este nome.' });
-  const now = new Date().toISOString(); const printer = { id: nextId(saved.printers), name, ip, brand: clean(req.body?.brand, 80), model, type, api_key: clean(req.body?.api_key, 200), serial_number: clean(req.body?.serial_number, 160), group_name: clean(req.body?.group_name, 100), status: 'UNKNOWN', job_name: null, job_progress: 0, created_at: now, updated_at: now };
+  const now = new Date().toISOString(); const provisional = { type, brand: clean(req.body?.brand, 80), model }; const material_system = normalizeMaterialSystem(req.body?.material_system || inferMaterialSystem(provisional)); const material_slot_count = materialSlotCount(material_system, req.body?.material_slot_count);
+  const printer = { id: nextId(saved.printers), name, ip, brand: provisional.brand, model, type, api_key: clean(req.body?.api_key, 200), serial_number: clean(req.body?.serial_number, 160), group_name: clean(req.body?.group_name, 100), material_system, material_slot_count, status: 'UNKNOWN', job_name: null, job_progress: 0, created_at: now, updated_at: now };
   saved.printers.push(printer); save(saved); res.status(201).json(printer);
 });
 app.put('/api/printers/:id', (req, res) => {
@@ -1384,7 +1559,8 @@ app.put('/api/printers/:id', (req, res) => {
   if (!name || !ip || !model) return res.status(400).json({ error: 'Nome, IP e modelo são obrigatórios.' });
   if (!printerConnectors.has(type)) return res.status(400).json({ error: 'O tipo de ligação da impressora não é suportado.' });
   if (saved.printers.some((item) => Number(item.id) !== Number(printer.id) && item.name.toLocaleLowerCase('pt-PT') === name.toLocaleLowerCase('pt-PT'))) return res.status(409).json({ error: 'Já existe uma impressora com este nome.' });
-  Object.assign(printer, { name, ip, brand: clean(req.body?.brand, 80), model, type, api_key: clean(req.body?.api_key, 200), serial_number: clean(req.body?.serial_number, 160), group_name: clean(req.body?.group_name, 100), updated_at: new Date().toISOString() });
+  const provisional = { type, brand: clean(req.body?.brand, 80), model }; const material_system = normalizeMaterialSystem(req.body?.material_system || printer.material_system || inferMaterialSystem(provisional)); const material_slot_count = materialSlotCount(material_system, req.body?.material_slot_count ?? printer.material_slot_count);
+  Object.assign(printer, { name, ip, brand: provisional.brand, model, type, api_key: clean(req.body?.api_key, 200), serial_number: clean(req.body?.serial_number, 160), group_name: clean(req.body?.group_name, 100), material_system, material_slot_count, updated_at: new Date().toISOString() });
   save(saved); res.json(printer);
 });
 app.delete('/api/printers/:id', (req, res) => {
@@ -1392,8 +1568,50 @@ app.delete('/api/printers/:id', (req, res) => {
   if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
   saved.printers = saved.printers.filter((item) => Number(item.id) !== Number(printer.id));
   delete saved.assignments[String(printer.id)];
+  delete saved.printer_materials[String(printer.id)];
   saved.jobs = saved.jobs.filter((job) => Number(job.printer_id) !== Number(printer.id));
   save(saved); res.status(204).end();
+});
+app.get('/api/printers/:id/materials', async (req, res) => {
+  const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
+  if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
+  const snapshot = await directPrinterStatus(printer, saved);
+  res.json(snapshot.material_profile || printerMaterialProfile(saved, printer));
+});
+app.put('/api/printers/:id/material-slots/:slot', (req, res) => {
+  const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
+  if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
+  const system = normalizeMaterialSystem(printer.material_system || inferMaterialSystem(printer)); const slot = Math.floor(Number(req.params.slot)); const slots = materialSlotCount(system, printer.material_slot_count);
+  if (!Number.isInteger(slot) || slot < 1 || slot > slots) return res.status(400).json({ error: 'Slot de material inválido para esta impressora.' });
+  const spoolId = Number(req.body?.spool_id);
+  if (req.body?.spool_id !== undefined && req.body?.spool_id !== '' && (!Number.isInteger(spoolId) || spoolId < 1)) return res.status(400).json({ error: 'Bobine inválida.' });
+  const spool = Number.isInteger(spoolId) && spoolId > 0 ? saved.spools.find((item) => Number(item.id) === spoolId) : null;
+  if (Number.isInteger(spoolId) && spoolId > 0 && !spool) return res.status(404).json({ error: 'A bobine selecionada não existe no inventário.' });
+  if (system === 'single') {
+    if (spool) saved.assignments[String(printer.id)] = { spool_id: spool.id, assigned_at: new Date().toISOString(), source: 'material-slot' };
+    else delete saved.assignments[String(printer.id)];
+  }
+  const record = saved.printer_materials[String(printer.id)] || { system, slots: [], updated_at: null };
+  const existing = new Map((Array.isArray(record.slots) ? record.slots : []).map((item) => [Number(item.slot), item]));
+  if (spool) existing.set(slot, slotFromSpool(spool, slot, system));
+  else existing.delete(slot);
+  record.system = system; record.slots = [...existing.values()].sort((left, right) => Number(left.slot) - Number(right.slot)); record.updated_at = new Date().toISOString();
+  saved.printer_materials[String(printer.id)] = record; save(saved);
+  res.json(printerMaterialProfile(saved, printer));
+});
+app.post('/api/printers/:id/materials/sync', async (req, res) => {
+  const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
+  if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
+  const snapshot = await directPrinterStatus(printer, saved); const automaticSlots = (snapshot.material_profile?.slots || []).filter((slot) => String(slot.source || '').includes('impressora') && (slot.material || slot.color || slot.color_hex));
+  if (!automaticSlots.length) return res.status(409).json({ error: 'Esta impressora ainda não expõe os materiais dos slots pela API. Podes associá-los manualmente no portal.' });
+  const system = normalizeMaterialSystem(printer.material_system || inferMaterialSystem(printer)); const record = saved.printer_materials[String(printer.id)] || { system, slots: [], updated_at: null }; const previous = new Map((Array.isArray(record.slots) ? record.slots : []).map((slot) => [Number(slot.slot), slot]));
+  for (const automatic of automaticSlots) {
+    const local = previous.get(Number(automatic.slot));
+    previous.set(Number(automatic.slot), { ...automatic, spool_id: local?.spool_id || null, source: local?.spool_id ? 'associada + impressora' : 'impressora' });
+  }
+  record.system = system; record.slots = [...previous.values()].sort((left, right) => Number(left.slot) - Number(right.slot)); record.updated_at = new Date().toISOString(); record.last_auto_sync_at = new Date().toISOString();
+  saved.printer_materials[String(printer.id)] = record; save(saved);
+  res.json({ profile: printerMaterialProfile(saved, printer), message: `${automaticSlots.length} slot(s) sincronizado(s) com a impressora.` });
 });
 app.post('/api/projects', async (req, res) => forwarded(res, await safeRequest('post', `${internalProductionUrl}/api/projects`, req.body)));
 function positiveProjectId(value) {
