@@ -178,7 +178,7 @@ function showPrinterEditorPage(printerId) {
 function openPrinterDetailPage(printerId) {
   window.location.assign(`/impressoras/${encodeURIComponent(printerId)}`);
 }
-function closePrinterDetailPage() { window.location.assign('/'); }
+function closePrinterDetailPage() { window.location.assign('/impressoras'); }
 function printerWebAddress(printer) {
   const address = String(printer?.ip || '').trim();
   if (!address) return '';
@@ -904,7 +904,9 @@ setupPrinterWorkspace();
 setupPrinterCatalog();
 const initialProjectEditorId = projectEditorIdFromPath();
 const initialPrinterEditorId = printerEditorIdFromPath();
+const initialPrinterListPage = /^\/impressoras\/?$/.test(window.location.pathname);
 if (initialProjectEditorId) showProjectEditorPage(initialProjectEditorId);
+if (initialPrinterListPage) document.querySelector('[data-view="printers"]')?.click();
 if (initialPrinterEditorId) showPrinterEditorPage(initialPrinterEditorId);
 populateFilaments(); refreshCustomers(); refreshFiles(); update().finally(async () => {
   renderOverviewFromCurrent();
