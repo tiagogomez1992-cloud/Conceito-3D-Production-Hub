@@ -936,6 +936,110 @@ body.project-editor-page .project-workspace {
   .farm-gcode-row { align-items:start; flex-direction:column; }
 }
 
+/* Each printer has a focused settings page at /impressoras/:id. */
+.printer-row-open {
+  width:100%;
+  border:0;
+  background:transparent;
+  color:inherit;
+  font:inherit;
+  text-align:left;
+  cursor:pointer;
+}
+
+.printer-row-open:hover,
+.printer-row-open:focus-visible {
+  margin-inline:-8px;
+  width:calc(100% + 16px);
+  padding-inline:8px;
+  border-radius:5px;
+  background:#008bff12;
+  outline:0;
+}
+
+.machine-top.machine-open {
+  width:100%;
+  padding:0;
+  border:0;
+  background:transparent;
+  color:inherit;
+  font:inherit;
+  text-align:left;
+  cursor:pointer;
+}
+
+.machine-top.machine-open > span:first-child {
+  display:flex;
+  align-items:center;
+  gap:9px;
+}
+
+.machine-top.machine-open:hover strong,
+.machine-top.machine-open:focus-visible strong { color:var(--p3-blue); }
+.machine-top.machine-open:focus-visible { outline:2px solid #008bff88; outline-offset:6px; border-radius:4px; }
+.overview-printer-card[data-open-printer] { cursor:pointer; }
+.overview-printer-card[data-open-printer]:hover,.overview-printer-card[data-open-printer]:focus-visible { border-color:var(--p3-blue); transform:translateY(-2px); outline:0; }
+
+.printer-workspace { margin:22px 0 28px; display:grid; gap:16px; }
+.printer-workspace.hidden { display:none; }
+
+body.printer-editor-page #printers > .section-heading,
+body.printer-editor-page #printers > #discovery-results,
+body.printer-editor-page #printers > #printer-form,
+body.printer-editor-page #printers > #printer-grid { display:none; }
+
+body.printer-editor-page #printers { max-width:1320px; }
+body.printer-editor-page .printer-workspace { margin-top:7px; }
+
+.printer-console,
+.printer-settings-panel,
+.printer-material-console,
+.printer-danger-zone {
+  padding:22px;
+  border:1px solid #343a3f;
+  border-radius:7px;
+  background:linear-gradient(135deg,#161a1d,#101315);
+  box-shadow:0 14px 30px #00000018;
+}
+
+.printer-console-header { display:flex; align-items:start; justify-content:space-between; gap:18px; }
+.printer-console-header h2 { margin:4px 0 7px; font-family:Impact,"Arial Narrow",sans-serif; font-size:clamp(1.7rem,3vw,2.4rem); font-weight:400; letter-spacing:.015em; text-transform:uppercase; }
+.printer-console-header p:not(.eyebrow),.printer-danger-zone p:not(.eyebrow) { margin:0; color:#aeb6bc; }
+.printer-console-status { display:flex; align-items:center; gap:9px; flex-wrap:wrap; justify-content:flex-end; }
+
+.printer-live-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:11px; margin-top:20px; }
+.printer-live-grid > div { min-width:0; padding:13px; border:1px solid #2f3940; border-radius:6px; background:#0d1113; }
+.printer-live-grid span,.printer-live-grid strong,.printer-live-grid small { display:block; }
+.printer-live-grid span { color:#8f9aa0; font-size:.67rem; font-weight:800; letter-spacing:.09em; text-transform:uppercase; }
+.printer-live-grid strong { overflow-wrap:anywhere; margin:7px 0 3px; color:#f5f5f2; font-size:.9rem; }
+.printer-live-grid small { overflow-wrap:anywhere; color:#9da7ac; font-size:.72rem; }
+.printer-job-progress { height:7px; overflow:hidden; margin-top:16px; border:1px solid #263037; border-radius:99px; background:#090c0e; }
+.printer-job-progress span { display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,var(--p3-blue),#2f9dff); transition:width .25s ease; }
+
+.printer-settings-panel .panel-heading { margin-bottom:17px; }
+.printer-settings-panel .panel-heading h2,.printer-danger-zone h2 { margin:4px 0 0; font-size:1rem; letter-spacing:.03em; text-transform:uppercase; }
+.printer-detail-form { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; align-items:end; }
+.printer-detail-form label { display:grid; min-width:0; gap:6px; color:#aeb6bc; font-size:.7rem; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+.printer-detail-form input,.printer-detail-form select { width:100%; min-width:0; padding:9px 10px; border:1px solid #3b444b; border-radius:5px; background:#0b0e10; color:#f5f5f2; font:inherit; text-transform:none; }
+.printer-detail-form input:focus,.printer-detail-form select:focus { border-color:var(--p3-blue); outline:2px solid #008bff55; }
+.printer-detail-form button { justify-self:start; }
+.printer-material-console { padding:0; border:0; background:transparent; box-shadow:none; }
+.printer-material-console .material-panel { margin:0; }
+.printer-danger-zone { display:flex; align-items:center; justify-content:space-between; gap:20px; border-color:#633532; background:linear-gradient(135deg,#231615,#161011); }
+.printer-danger-zone .eyebrow { color:#ff8c69; }
+
+@media (max-width:1050px) {
+  .printer-live-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .printer-detail-form { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+
+@media (max-width:620px) {
+  .printer-console,.printer-settings-panel,.printer-danger-zone { padding:16px; }
+  .printer-console-header,.printer-danger-zone { align-items:start; flex-direction:column; }
+  .printer-console-status { justify-content:flex-start; }
+  .printer-live-grid,.printer-detail-form { grid-template-columns:1fr; }
+}
+
 /* Central library: one named part with multiple production-ready G-code variants. */
 .library-part-grid { display:grid; gap:18px; }
 .library-part-card { padding:20px; border:1px solid #343d43; border-radius:7px; background:linear-gradient(135deg,#161a1d,#0e1214); box-shadow:0 14px 30px #0003; }

@@ -133,12 +133,64 @@ function materialPanel(printer) {
 function renderPrinters(items) {
   $('printer-list').innerHTML = items.length ? items.map((p) => {
     const progress = Number(p.job_progress || 0) * (Number(p.job_progress || 0) <= 1 ? 100 : 1);
-    return `<div class="printer-row"><span class="status ${statusClass(p.status)}"></span><div class="printer-name"><strong>${value(p.name, 'Sem nome')}</strong><small>${value(p.model || p.type, 'Impressora')}</small></div><div class="job"><strong>${value(p.job_name, 'Sem trabalho ativo')}</strong><small>${progress ? `${Math.round(progress)}%` : value(p.status)}</small></div><span class="badge ${statusClass(p.status)}">${value(p.status)}</span></div>`;
+    return `<button class="printer-row printer-row-open" type="button" data-open-printer="${p.id}"><span class="status ${statusClass(p.status)}"></span><span class="printer-name"><strong>${value(p.name, 'Sem nome')}</strong><small>${value(p.model || p.type, 'Impressora')}</small></span><span class="job"><strong>${value(p.job_name, 'Sem trabalho ativo')}</strong><small>${progress ? `${Math.round(progress)}%` : value(p.status)}</small></span><span class="badge ${statusClass(p.status)}">${value(p.status)}</span></button>`;
   }).join('') : '<p class="empty">Ainda não há impressoras configuradas.</p>';
   $('printer-grid').innerHTML = items.length ? items.map((p) => {
     const profile = materialProfile(p); const loaded = (profile.slots || []).filter((slot) => slot.spool_id || slot.material).length;
-    return `<article class="machine-card"><div class="machine-top"><div><span class="status ${statusClass(p.status)}"></span><strong>${value(p.name, 'Sem nome')}</strong></div><span class="badge ${statusClass(p.status)}">${value(p.status)}</span></div><dl><div><dt>Marca</dt><dd>${value(p.brand, 'Não indicada')}</dd></div><div><dt>Modelo</dt><dd>${value(p.model)}</dd></div><div><dt>Ligação</dt><dd>${escape(p.type || '—')}</dd></div><div><dt>Trabalho</dt><dd>${value(p.job_name, 'Sem trabalho ativo')}</dd></div><div><dt>Sistema de material</dt><dd>${escape(materialSystemText(profile.system))} · ${loaded}/${profile.slot_count || 1} carregado(s)</dd></div></dl>${materialPanel(p)}<div class="machine-actions"><button class="compact secondary" data-edit-printer="${p.id}">Editar impressora</button><button class="compact danger" data-delete-printer="${p.id}" data-printer-name="${escape(p.name)}">Remover</button></div></article>`;
+    return `<article class="machine-card"><button class="machine-top machine-open" type="button" data-open-printer="${p.id}"><span><span class="status ${statusClass(p.status)}"></span><strong>${value(p.name, 'Sem nome')}</strong></span><span class="badge ${statusClass(p.status)}">${value(p.status)}</span></button><dl><div><dt>Marca</dt><dd>${value(p.brand, 'Não indicada')}</dd></div><div><dt>Modelo</dt><dd>${value(p.model)}</dd></div><div><dt>Ligação</dt><dd>${escape(p.type || '—')}</dd></div><div><dt>Trabalho</dt><dd>${value(p.job_name, 'Sem trabalho ativo')}</dd></div><div><dt>Sistema de material</dt><dd>${escape(materialSystemText(profile.system))} · ${loaded}/${profile.slot_count || 1} carregado(s)</dd></div></dl>${materialPanel(p)}<div class="machine-actions"><button class="compact secondary" data-open-printer="${p.id}">Abrir definições</button><button class="compact danger" data-delete-printer="${p.id}" data-printer-name="${escape(p.name)}">Remover</button></div></article>`;
   }).join('') : '<p class="empty">Ainda não há impressoras configuradas.</p>';
+  renderPrinterWorkspace();
+}
+
+let selectedPrinterId = null;
+function printerEditorIdFromPath() {
+  const match = window.location.pathname.match(/^\/impressoras\/(\d+)\/?$/);
+  return match ? Number(match[1]) : null;
+}
+function isPrinterEditorPage() { return Boolean(printerEditorIdFromPath()); }
+function showPrinterEditorPage(printerId) {
+  selectedPrinterId = Number(printerId);
+  document.body.classList.add('printer-editor-page');
+  const printersTab = document.querySelector('[data-view="printers"]');
+  document.querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab === printersTab));
+  document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === 'printers'));
+}
+function openPrinterDetailPage(printerId) {
+  window.location.assign(`/impressoras/${encodeURIComponent(printerId)}`);
+}
+function closePrinterDetailPage() { window.location.assign('/'); }
+function printerWebAddress(printer) {
+  const address = String(printer?.ip || '').trim();
+  if (!address) return '';
+  return /^https?:\/\//i.test(address) ? address : `http://${address}`;
+}
+function printerTypeOptions(selected) {
+  const types = [['klipper', 'Klipper / Moonraker'], ['octoprint', 'OctoPrint'], ['prusa', 'PrusaLink'], ['bambu', 'Bambu Lab LAN'], ['creality', 'Creality LAN'], ['anycubic', 'Anycubic LAN'], ['elegoo-centauri', 'Elegoo SDCP / Centauri'], ['elegoo-centauri2', 'Elegoo / Centauri 2']];
+  if (selected && !types.some(([value]) => value === selected)) types.unshift([selected, selected]);
+  return types.map(([value, label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('');
+}
+function setupPrinterWorkspace() {
+  const printerGrid = $('printer-grid');
+  if (!printerGrid || $('printer-workspace')) return;
+  const workspace = document.createElement('section');
+  workspace.className = 'printer-workspace hidden';
+  workspace.id = 'printer-workspace';
+  printerGrid.insertAdjacentElement('afterend', workspace);
+}
+function renderPrinterWorkspace() {
+  const workspace = $('printer-workspace');
+  if (!workspace || !selectedPrinterId) return;
+  const printer = latest.printers.find((item) => Number(item.id) === Number(selectedPrinterId));
+  workspace.classList.remove('hidden');
+  if (!printer) {
+    workspace.innerHTML = '<article class="printer-console"><button class="text-button" data-close-printer>← Impressoras</button><h2>Impressora não encontrada</h2><p>Esta impressora pode ter sido removida do portal.</p></article>';
+    return;
+  }
+  const profile = materialProfile(printer);
+  const progressRaw = Number(printer.job_progress || 0);
+  const progress = Math.max(0, Math.min(100, progressRaw * (progressRaw <= 1 ? 100 : 1)));
+  const webAddress = printerWebAddress(printer);
+  workspace.innerHTML = `<article class="printer-console"><div class="printer-console-header"><div><button class="text-button" data-close-printer>← Impressoras</button><p class="eyebrow">MÁQUINA #${escape(printer.id)}</p><h2>${escape(printer.name || 'Impressora')}</h2><p>${escape(printer.brand || 'Marca não indicada')} · ${escape(printer.model || printer.type || 'Perfil não indicado')}</p></div><div class="printer-console-status"><span class="badge ${statusClass(printer.status)}">${escape(printer.status || 'UNKNOWN')}</span>${webAddress ? `<a class="compact secondary" href="${escape(webAddress)}" target="_blank" rel="noopener noreferrer">Abrir interface</a>` : ''}</div></div><section class="printer-live-grid"><div><span>Estado</span><strong>${escape(printer.status || 'UNKNOWN')}</strong><small>Atualização automática</small></div><div><span>Ligação</span><strong>${escape(printer.type || '—')}</strong><small>${escape(printer.ip || 'Sem endereço')}</small></div><div><span>Trabalho</span><strong>${escape(printer.job_name || 'Sem trabalho ativo')}</strong><small>${progress ? `${Math.round(progress)}% concluído` : 'Sem progresso em curso'}</small></div><div><span>Material</span><strong>${escape(materialSystemText(profile.system))}</strong><small>${(profile.slots || []).filter((slot) => slot.spool_id || slot.material).length}/${profile.slot_count || 1} slot(s) carregado(s)</small></div></section><div class="printer-job-progress"><span style="width:${progress}%"></span></div></article><article class="printer-settings-panel"><div class="panel-heading"><div><p class="eyebrow">CONFIGURAÇÃO</p><h2>Definições da impressora</h2></div><span class="integration-label">Guardado no portal</span></div><form id="printer-detail-form" class="printer-detail-form" data-printer-id="${printer.id}"><label>Nome<input name="name" required maxlength="100" value="${escape(printer.name || '')}"></label><label>IP / hostname<input name="ip" required maxlength="160" value="${escape(printer.ip || '')}"></label><label>Tipo de ligação<select name="type">${printerTypeOptions(printer.type || 'klipper')}</select></label><label>Marca<input name="brand" maxlength="80" list="printer-brand-list" value="${escape(printer.brand || '')}"></label><label>Modelo / perfil<input name="model" required maxlength="100" list="printer-model-list" value="${escape(printer.model || '')}"></label><label>Sistema de material<select name="material_system"><option value="single" ${profile.system === 'single' ? 'selected' : ''}>Bobine única</option><option value="ams" ${profile.system === 'ams' ? 'selected' : ''}>AMS</option><option value="ace" ${profile.system === 'ace' ? 'selected' : ''}>ACE</option></select></label><label>N.º de slots<input name="material_slot_count" type="number" min="1" max="16" value="${escape(profile.slot_count || 1)}"></label><label>Chave API / código LAN<input name="api_key" maxlength="200" value="${escape(printer.api_key || '')}" placeholder="Opcional"></label><label>N.º de série<input name="serial_number" maxlength="160" value="${escape(printer.serial_number || '')}" placeholder="Bambu / Elegoo C2"></label><label>Grupo<input name="group_name" maxlength="100" value="${escape(printer.group_name || '')}" placeholder="Ex.: Klipper"></label><button class="compact" type="submit">Guardar definições</button></form><datalist id="printer-brand-list">${Object.keys(printerCatalog).map((brand) => `<option value="${escape(brand)}"></option>`).join('')}</datalist><datalist id="printer-model-list">${Object.entries(printerCatalog).flatMap(([brand, models]) => models.map((model) => `<option value="${escape(`${brand} ${model}`)}"></option>`)).join('')}</datalist></article><article class="printer-material-console">${materialPanel(printer)}</article><article class="printer-danger-zone"><div><p class="eyebrow">ZONA DE RISCO</p><h2>Remover impressora</h2><p>Remove apenas o registo e as associações do Production Hub; não altera a máquina física.</p></div><button class="compact danger" data-delete-printer="${printer.id}" data-printer-name="${escape(printer.name)}">Remover impressora</button></article>`;
 }
 function normalizedPrinterAddress(value) {
   return String(value || '').trim().replace(/^https?:\/\//i, '').replace(/\/$/, '').toLowerCase();
@@ -288,13 +340,17 @@ document.querySelector('main.shell').insertBefore(historyView, $('files'));
 historyTab.onclick = () => { document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === historyTab)); document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view === historyView)); };
 document.addEventListener('click', async (event) => {
   const open = event.target.closest('[data-open-form]'), close = event.target.closest('[data-close-form]');
+  const openPrinterPage = event.target.closest('[data-open-printer]');
+  const closePrinterPage = event.target.closest('[data-close-printer]');
+  if (openPrinterPage) { openPrinterDetailPage(openPrinterPage.dataset.openPrinter); return; }
+  if (closePrinterPage) { closePrinterDetailPage(); return; }
   if (open) { $(open.dataset.openForm).classList.remove('hidden'); if (open.dataset.openForm === 'printer-form') { $('printer-form').reset(); resetPrinterFormMode(); setPrinterCatalogSelection(); } if (open.dataset.openForm === 'order-form') { $('order-form').reset(); resetOrderPdfAnalysis(); } }
   if (close) { $(close.dataset.closeForm).classList.add('hidden'); if (close.dataset.closeForm === 'customer-form') resetTemplateForm(); if (close.dataset.closeForm === 'printer-form') { $('printer-form').reset(); resetPrinterFormMode(); setPrinterCatalogSelection(); } if (close.dataset.closeForm === 'order-form') { $('order-form').reset(); resetOrderPdfAnalysis(); } }
   const removeArea = event.target.closest('[data-remove-template-field]'); if (removeArea) { templateFields.splice(Number(removeArea.dataset.removeTemplateField), 1); renderTemplateFields(); }
   if (event.target.id === 'clear-template-fields') { templateFields = []; renderTemplateFields(); }
   const discovered = event.target.closest('[data-add-discovered]'); if (discovered) { try { const printer = JSON.parse(discovered.dataset.addDiscovered); const form = $('printer-form'); form.reset(); resetPrinterFormMode(); form.querySelector('[name="name"]').value = `${printer.detected_as} ${printer.ip}`; form.querySelector('[name="ip"]').value = printer.port && Number(printer.port) !== 7125 ? `${printer.ip}:${printer.port}` : printer.ip; form.querySelector('[name="type"]').value = printer.type; form.querySelector('[name="group_name"]').value = printer.detected_as; setPrinterCatalogSelection(); form.classList.remove('hidden'); $('printer-brand').focus(); toast('Dados preenchidos. Seleciona a marca e o modelo antes de confirmar.'); } catch { toast('Não foi possível preparar esta impressora.', 'error'); } }
-  const editPrinter = event.target.closest('[data-edit-printer]'); if (editPrinter) openPrinterEditor(editPrinter.dataset.editPrinter);
-  const deletePrinter = event.target.closest('[data-delete-printer]'); if (deletePrinter && confirm(`Remover a impressora ${deletePrinter.dataset.printerName}? Esta ação não altera a impressora física.`)) try { await api(`/api/printers/${deletePrinter.dataset.deletePrinter}`, { method: 'DELETE' }); toast('Impressora removida do portal.'); update(); } catch (error) { toast(error.message, 'error'); }
+  const editPrinter = event.target.closest('[data-edit-printer]'); if (editPrinter) openPrinterDetailPage(editPrinter.dataset.editPrinter);
+  const deletePrinter = event.target.closest('[data-delete-printer]'); if (deletePrinter && confirm(`Remover a impressora ${deletePrinter.dataset.printerName}? Esta ação não altera a impressora física.`)) try { await api(`/api/printers/${deletePrinter.dataset.deletePrinter}`, { method: 'DELETE' }); toast('Impressora removida do portal.'); if (isPrinterEditorPage()) closePrinterDetailPage(); else update(); } catch (error) { toast(error.message, 'error'); }
   const deleteCustomer = event.target.closest('[data-delete-customer]'); if (deleteCustomer && confirm('Remover este cliente e o respetivo modelo?')) try { await api(`/api/customers/${deleteCustomer.dataset.deleteCustomer}`, { method: 'DELETE' }); toast('Cliente removido.'); refreshCustomers(); } catch (error) { toast(error.message, 'error'); }
   const deleteFile = event.target.closest('[data-delete-file]'); if (deleteFile && confirm('Remover este G-code da biblioteca?')) try { await api(`/api/files/${deleteFile.dataset.deleteFile}`, { method: 'DELETE' }); toast('G-code removido.'); refreshFiles(); } catch (error) { toast(error.message, 'error'); }
   const deletePart = event.target.closest('[data-delete-library-part]'); if (deletePart && confirm('Remover esta peça vazia da biblioteca?')) try { await api(`/api/library-parts/${deletePart.dataset.deleteLibraryPart}`, { method: 'DELETE' }); toast('Peça removida.'); refreshFiles(); } catch (error) { toast(error.message, 'error'); }
@@ -328,6 +384,13 @@ document.addEventListener('click', async (event) => {
   const save = event.target.closest('[data-save-assignment]'); if (save) { const id = save.dataset.saveAssignment, selected = document.querySelector(`[data-printer="${id}"]`).value; try { if (selected) await api('/api/assignments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: id, spool_id: selected }) }); else await fetch(`/api/assignments/${id}`, { method: 'DELETE' }); toast('Bobine atualizada.'); update(); } catch (error) { toast(error.message, 'error'); } }
   const use = event.target.closest('[data-consume]'); if (use) { const grams = prompt('Gramas consumidos:', '0'); if (Number(grams) > 0) try { await api('/api/consume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printer_id: use.dataset.consume, spool_id: use.dataset.spool, grams: Number(grams) }) }); toast('Consumo registado.'); update(); } catch (error) { toast(error.message, 'error'); } }
   const complete = event.target.closest('[data-complete-order]'); if (complete) try { const result = await api(`/api/orders/${complete.dataset.completeOrder}/complete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); toast(result.consumed_grams ? `Concluída; ${result.consumed_grams} g descontados.` : 'Encomenda concluída.'); update(); } catch (error) { toast(error.message, 'error'); }
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const card = event.target.closest('.overview-printer-card[data-open-printer]');
+  if (!card) return;
+  event.preventDefault();
+  openPrinterDetailPage(card.dataset.openPrinter);
 });
 document.addEventListener('change', async (event) => {
   if (event.target.matches('#order-form [name="order_pdf"]')) { try { await analyseOrderPdf(); } catch (error) { toast(error.message, 'error'); } return; }
@@ -417,6 +480,23 @@ for (const id of ['order-form', 'project-form', 'printer-form', 'spool-form', 'c
     const result = await api(endpoint, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
     formElement.reset(); if (id === 'printer-form') { resetPrinterFormMode(); setPrinterCatalogSelection(); } if (id === 'order-form') resetOrderPdfAnalysis(); formElement.classList.add('hidden'); if (id === 'customer-form') { resetTemplateForm(); await refreshCustomers(); } if (id === 'library-part-form') await refreshFiles(); toast(id === 'customer-form' ? 'Cliente e modelo guardados.' : id === 'library-part-form' ? 'Peça criada. Agora adiciona os G-codes.' : id === 'printer-form' ? wasEditingPrinter ? 'Impressora atualizada.' : 'Impressora adicionada ao Production Hub.' : id === 'spool-form' ? 'Bobine adicionada ao inventário do portal.' : result.status === 'draft' ? 'Rascunho criado. Valida as peças antes de enviar para produção.' : 'Encomenda criada com os dados confirmados.'); update();
   } catch (error) { toast(error.message, 'error'); }
+});
+document.addEventListener('submit', async (event) => {
+  const form = event.target;
+  if (form.id !== 'printer-detail-form') return;
+  event.preventDefault();
+  const printerId = form.dataset.printerId;
+  const values = Object.fromEntries(new FormData(form).entries());
+  const button = form.querySelector('button[type="submit"]');
+  const originalLabel = button.textContent;
+  button.disabled = true; button.textContent = 'A guardar…';
+  try {
+    const updated = await api(`/api/printers/${printerId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+    selectedPrinterId = Number(updated.id || printerId);
+    toast('Definições da impressora atualizadas.');
+    await update();
+  } catch (error) { toast(error.message, 'error'); }
+  finally { button.disabled = false; button.textContent = originalLabel; }
 });
 document.addEventListener('submit', async (event) => {
   const form = event.target;
@@ -767,7 +847,7 @@ function overviewPrinterCard(printer) {
   const rawProgress = Number(printer.job_progress || 0);
   const progress = rawProgress * (rawProgress <= 1 ? 100 : 1);
   const state = statusClass(printer.status);
-  return `<article class="overview-printer-card ${state}"><div class="overview-printer-title"><div><strong>${value(printer.name, 'Sem nome')}</strong><small>${state === 'printing' ? 'A imprimir' : value(printer.status, 'Offline')}</small></div><span class="status ${state}"></span></div><div class="overview-printer-preview" aria-hidden="true"><span></span><i></i></div><p>${value(printer.job_name, 'Sem trabalho ativo')}</p><div class="overview-progress"><span style="width:${Math.max(0, Math.min(100, progress || (state === 'printing' ? 4 : 0)))}%"></span></div><div class="overview-printer-footer"><small>${progress ? `${Math.round(progress)}% concluido` : value(printer.model || printer.type, 'Impressora')}</small><small>${state === 'printing' ? 'Em curso' : 'Livre'}</small></div></article>`;
+  return `<article class="overview-printer-card ${state}" data-open-printer="${printer.id}" tabindex="0" role="button"><div class="overview-printer-title"><div><strong>${value(printer.name, 'Sem nome')}</strong><small>${state === 'printing' ? 'A imprimir' : value(printer.status, 'Offline')}</small></div><span class="status ${state}"></span></div><div class="overview-printer-preview" aria-hidden="true"><span></span><i></i></div><p>${value(printer.job_name, 'Sem trabalho ativo')}</p><div class="overview-progress"><span style="width:${Math.max(0, Math.min(100, progress || (state === 'printing' ? 4 : 0)))}%"></span></div><div class="overview-printer-footer"><small>${progress ? `${Math.round(progress)}% concluido` : value(printer.model || printer.type, 'Impressora')}</small><small>${state === 'printing' ? 'Em curso' : 'Livre'}</small></div></article>`;
 }
 
 function renderOverviewFromCurrent() {
@@ -798,9 +878,12 @@ function renderOverviewFromCurrent() {
 
 setupOverviewLayout();
 setupProjectWorkspace();
+setupPrinterWorkspace();
 setupPrinterCatalog();
 const initialProjectEditorId = projectEditorIdFromPath();
+const initialPrinterEditorId = printerEditorIdFromPath();
 if (initialProjectEditorId) showProjectEditorPage(initialProjectEditorId);
+if (initialPrinterEditorId) showPrinterEditorPage(initialPrinterEditorId);
 populateFilaments(); refreshCustomers(); refreshFiles(); update().finally(async () => {
   renderOverviewFromCurrent();
   if (initialProjectEditorId) {
