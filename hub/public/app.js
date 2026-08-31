@@ -862,7 +862,7 @@ function setupOverviewLayout() {
   fleet.insertAdjacentElement('afterend', queue);
 
   actions.classList.add('overview-sidebar');
-  actions.innerHTML = '<section class="overview-side-panel"><div class="panel-heading"><div><p class="eyebrow">INVENTARIO</p><h2>Alertas de material</h2></div><span class="integration-label">Stock</span></div><div id="overview-material-alerts"></div></section><section class="overview-side-panel"><div class="panel-heading"><div><p class="eyebrow">SISTEMA</p><h2>Estado do sistema</h2></div></div><div id="overview-system-status"></div></section>';
+  actions.innerHTML = '<section class="overview-side-panel"><div class="panel-heading"><div><p class="eyebrow">INVENTARIO</p><h2>Alertas de material</h2></div><span class="integration-label">Stock</span></div><div id="overview-material-alerts"></div></section>';
 }
 
 function overviewPrinterCard(printer) {
@@ -875,7 +875,7 @@ function overviewPrinterCard(printer) {
 function renderOverviewFromCurrent() {
   const printerList = $('printer-list');
   if (printerList) {
-    const printers = latest.printers.slice(0, 5);
+    const printers = latest.printers;
     printerList.innerHTML = printers.length ? printers.map(overviewPrinterCard).join('') : '<p class="empty overview-empty">Ainda nao existem impressoras configuradas. Adiciona a primeira no menu Impressoras.</p>';
   }
 

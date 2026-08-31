@@ -298,7 +298,16 @@ header::after { content:"SHAPING TOMORROW.\A LAYER BY LAYER."; white-space:pre; 
   grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
   gap:10px;
   margin-top:15px;
+  max-height:250px;
+  overflow-y:auto;
+  padding-right:8px;
+  scrollbar-color:#5d6c75 #111518;
+  scrollbar-width:thin;
 }
+
+.overview-printers-panel .printer-list::-webkit-scrollbar { width:8px; }
+.overview-printers-panel .printer-list::-webkit-scrollbar-track { background:#111518; border-radius:99px; }
+.overview-printers-panel .printer-list::-webkit-scrollbar-thumb { background:#5d6c75; border-radius:99px; }
 
 .overview-printer-card {
   min-width:0;
