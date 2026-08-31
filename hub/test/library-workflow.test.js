@@ -2,11 +2,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const http = require('node:http');
 const { spawn } = require('node:child_process');
 
 const port = 18981;
+const moonrakerPort = 18982;
 const baseUrl = `http://127.0.0.1:${port}`;
 let server;
+let moonraker;
 let dataDir;
 
 async function json(url, options = {}) {
@@ -35,11 +38,25 @@ function gcodeForm(partId, filename, quantity, printerModel, color) {
 
 test.before(async () => {
   dataDir = fs.mkdtempSync(path.join(process.cwd(), '.test-data-'));
+  moonraker = http.createServer((request, response) => {
+    response.setHeader('Content-Type', 'application/json');
+    if (request.url.startsWith('/printer/objects/query?mmu')) {
+      response.end(JSON.stringify({ result: { status: { mmu: { num_gates: 4, gate_status: [1, 1, 0, 0], gate_material: ['PETG', 'PLA', '', ''], gate_color: ['FF6A00', '008BFF', '', ''], gate_spool_id: [10, 20, -1, -1] } } } }));
+      return;
+    }
+    if (request.url.startsWith('/printer/objects/query?print_stats')) {
+      response.end(JSON.stringify({ result: { status: { print_stats: { state: 'idle', filename: null }, virtual_sdcard: { progress: 0 }, display_status: { progress: 0 } } } }));
+      return;
+    }
+    response.end(JSON.stringify({ result: { value: {} } }));
+  });
+  await new Promise((resolve) => moonraker.listen(moonrakerPort, '127.0.0.1', resolve));
   server = spawn(process.execPath, ['server.js'], { cwd: path.resolve(__dirname, '..'), env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, DISPLAY_API_TOKEN: 'test-display-token' }, stdio: 'pipe' });
   await waitForServer();
 });
 test.after(() => {
   server?.kill('SIGTERM');
+  moonraker?.close();
   if (dataDir) fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
@@ -111,12 +128,22 @@ test('impressora, bobine e projeto são guardados pelo próprio portal', async (
   assert.equal(materialProfile.response.status, 200);
   assert.equal(materialProfile.body.slots[0].material, 'PETG');
 
+  const mmuPrinter = await json('/api/printers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'S1 MAX MMU', ip: `127.0.0.1:${moonrakerPort}`, brand: 'Anycubic', model: 'Anycubic Kobra S1 Max', type: 'klipper', material_system: 'ace', material_slot_count: 4 }) });
+  assert.equal(mmuPrinter.response.status, 201);
+  const mmuProfile = await json(`/api/printers/${mmuPrinter.body.id}/materials`);
+  assert.equal(mmuProfile.response.status, 200);
+  assert.equal(mmuProfile.body.slots[0].material, 'PETG');
+  assert.equal(mmuProfile.body.slots[0].color_hex, '#FF6A00');
+  assert.equal(mmuProfile.body.slots[0].mmu_gate, 0);
+  assert.equal(mmuProfile.body.slots[1].mmu_gate, 1);
+  assert.equal(mmuProfile.body.slots[2].material, '');
+
   const project = await json('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Teste standalone' }) });
   assert.equal(project.response.status, 201);
 
   const summary = await json('/api/summary');
   assert.equal(summary.response.status, 200);
-  assert.equal(summary.body.printers.total, 2);
+  assert.equal(summary.body.printers.total, 3);
   assert.equal(summary.body.spools.total, 1);
   assert.equal(summary.body.production.projects.length, 1);
   assert.equal(summary.body.printers.items.find((item) => item.id === acePrinter.body.id).material_profile.slots[0].spool_id, spool.body.id);

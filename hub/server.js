@@ -840,11 +840,12 @@ function slotFromSpool(spool, slot, system, source = 'manual') {
 }
 function normalizedReportedSlot(raw, fallbackSlot, system) {
   const slot = Math.max(1, Math.floor(Number(raw?.slot ?? raw?.index ?? raw?.id ?? fallbackSlot) || fallbackSlot));
-  const material = clean(raw?.material || raw?.type || raw?.filament_type || raw?.filament || raw?.name, 80);
+  const material = clean(raw?.material || raw?.type || raw?.filament_type || raw?.filament || raw?.filament_name || raw?.name, 80);
   const color = clean(raw?.color || raw?.colour || raw?.color_name, 80);
   const hex = colorHex(raw?.color_hex || raw?.hex || color);
   if (!material && !color && !hex) return null;
-  return { slot, label: materialSlotLabel(system, slot), spool_id: null, material, color, color_hex: hex, remaining_weight: Number.isFinite(Number(raw?.remaining_weight ?? raw?.remaining ?? raw?.weight)) ? Number(raw.remaining_weight ?? raw.remaining ?? raw.weight) : null, source: 'impressora', updated_at: new Date().toISOString() };
+  const mmuGate = Number.isInteger(Number(raw?.mmu_gate)) ? Number(raw.mmu_gate) : null;
+  return { slot, label: materialSlotLabel(system, slot), spool_id: null, material, color, color_hex: hex, remaining_weight: Number.isFinite(Number(raw?.remaining_weight ?? raw?.remaining ?? raw?.weight)) ? Number(raw.remaining_weight ?? raw.remaining ?? raw.weight) : null, source: mmuGate === null ? 'impressora' : `impressora · MMU ${mmuGate}`, mmu_gate: mmuGate, reported_spool_id: raw?.spool_id ?? null, gate_status: raw?.gate_status ?? null, updated_at: new Date().toISOString() };
 }
 function reportedSlotEntries(source) {
   if (Array.isArray(source)) return source;
@@ -858,9 +859,35 @@ function reportedSlotEntries(source) {
     return { ...value, slot };
   }).filter(Boolean);
 }
+function indexedValue(value, index) {
+  if (Array.isArray(value)) return value[index];
+  if (typeof value === 'string') return value.split(',')[index]?.trim();
+  return undefined;
+}
+function mmuReportedSlotEntries(source) {
+  if (!source || typeof source !== 'object') return [];
+  const collections = [source.gate_status, source.gate_material, source.gate_color, source.gate_color_rgb, source.gate_spool_id, source.gate_filament_name]
+    .filter((value) => Array.isArray(value) || typeof value === 'string');
+  const configuredCount = Math.floor(Number(source.num_gates ?? source.gate_count ?? source.gates ?? 0));
+  const count = Math.max(configuredCount, ...collections.map((value) => Array.isArray(value) ? value.length : value.split(',').length), 0);
+  return Array.from({ length: count }, (_value, index) => ({
+    // The printer's Mmu interface indexes its physical gates from zero. The
+    // portal deliberately keeps user-facing ACE slots one-based.
+    slot: index + 1,
+    mmu_gate: index,
+    gate_status: indexedValue(source.gate_status, index),
+    material: indexedValue(source.gate_material, index),
+    color: indexedValue(source.gate_color, index),
+    color_hex: indexedValue(source.gate_color_rgb, index),
+    spool_id: indexedValue(source.gate_spool_id, index),
+    filament_name: indexedValue(source.gate_filament_name, index),
+  }));
+}
 function moonrakerMaterialSlots(status, printer) {
   const system = normalizeMaterialSystem(printer.material_system || inferMaterialSystem(printer));
   if (system === 'single') return [];
+  const mmuSlots = mmuReportedSlotEntries(status?.mmu).map((entry, index) => normalizedReportedSlot(entry, index + 1, system)).filter(Boolean);
+  if (mmuSlots.length) return mmuSlots;
   const candidates = [status?.lane_data, status?.ace, status?.ace_data, status?.ams, status?.material_slots];
   for (const candidate of candidates) {
     const slots = reportedSlotEntries(candidate).map((entry, index) => normalizedReportedSlot(entry, index + 1, system)).filter(Boolean);
@@ -881,7 +908,7 @@ async function moonrakerReportedMaterialSlots(printer) {
   } catch { /* This installation may not publish ACE inventory to Moonraker DB. */ }
   // These objects are optional extensions. Query them individually so a normal
   // Klipper installation never becomes OFFLINE just because it lacks ACE/AMS data.
-  for (const objectName of ['lane_data', 'ace', 'ace_data', 'ams', 'material_slots']) {
+  for (const objectName of ['mmu', 'lane_data', 'ace', 'ace_data', 'ams', 'material_slots']) {
     try {
       const response = await client.get(printerEndpoint(printer, `/printer/objects/query?${objectName}`, 7125), { timeout: 1800, headers });
       const slots = moonrakerMaterialSlots(response.data?.result?.status || {}, printer);
