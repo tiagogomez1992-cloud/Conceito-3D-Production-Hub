@@ -249,7 +249,7 @@ function gcodeMetadata(contents, supplied = {}) {
   const material = clean(supplied.material || find([/(?:filament[_ ]?(?:type|material)|material|tipo de filamento)\s*[:=]\s*([^\r\n;]+)/im]), 80) || null;
   const color = clean(supplied.color || find([/(?:filament[_ ]?colou?r|cor(?: do filamento)?)\s*[:=]\s*([^\r\n;]+)/im]), 80) || null;
   const nozzle = number(supplied.nozzle) || number(find([/(?:nozzle[_ ]?(?:diameter|size)?|bico(?:[_ ]?(?:diameter|size))?)\s*[:=]\s*([0-9]+(?:[\.,][0-9]+)?)/im]));
-  const filament = number(find([/(?:total filament used \[g\]|filament used \[g\]|filament_weight_total)\s*[:=]\s*([0-9]+(?:[\.,][0-9]+)?)/im]));
+  const filament = number(supplied.filament_grams) || number(find([/(?:total filament used \[g\]|filament used \[g\]|filament_weight_total)\s*[:=]\s*([0-9]+(?:[\.,][0-9]+)?)/im]));
   return metadataResult({ quantity, material, color, nozzle, filament, source: 'gcode' });
 }
 
@@ -339,7 +339,7 @@ function metadataFrom3mf(buffer, supplied = {}) {
     material: clean(supplied.material || primary.material, 80),
     color: clean(supplied.color || primary.color, 80),
     nozzle,
-    filament: fromGcode.filament_grams,
+    filament: number(supplied.filament_grams) || fromGcode.filament_grams,
     materials: materials.length ? materials : [{ material: supplied.material, color: supplied.color }],
     source: '3mf',
     warnings,
@@ -1581,6 +1581,28 @@ function libraryParts(value) {
     .sort((left, right) => left.name.localeCompare(right.name, 'pt-PT'))
     .map((part) => ({ ...part, gcodes: libraryPartFiles(value, part.id).sort((left, right) => String(right.created_at).localeCompare(String(left.created_at))) }));
 }
+function saveQuickUploadToLibrary(saved, file, body = {}) {
+  const printerModel = clean(body.printer_model, 100);
+  if (!printerModel) throw new Error('Indica o modelo ou perfil de impressora compatível.');
+  const metadata = productionFileMetadata(file.path, file.originalname, body);
+  if (!metadata.valid) throw new Error(`Preenche os campos obrigatórios: ${metadata.missing.join(', ')}.`);
+  const requestedPartName = libraryPartName(body.part_name) || partNameFromFile({ original_name: file.originalname });
+  let part = saved.library_parts.find((item) => item.name === requestedPartName);
+  let createdPart = false;
+  if (!part) {
+    const now = new Date().toISOString();
+    part = { id: crypto.randomUUID(), name: requestedPartName, description: 'Criada pela Produção rápida.', created_at: now, updated_at: now };
+    saved.library_parts.push(part); createdPart = true;
+  }
+  const id = crypto.randomUUID(); const thumbnail = productionThumbnail(file.path, file.originalname, id, metadata);
+  const item = {
+    id, part_id: part.id, original_name: clean(file.originalname, 255), stored_name: file.filename, size_bytes: file.size,
+    printer_model: printerModel, active: true, metadata, thumbnail, source: 'quick-upload',
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+  };
+  saved.files.unshift(item); save(saved);
+  return { file: item, part, created_part: createdPart };
+}
 app.get('/api/library-parts', (_req, res) => { const saved = state(); res.json(libraryParts(saved)); });
 app.post('/api/library-parts', (req, res) => {
   const name = libraryPartName(req.body?.name);
@@ -1613,6 +1635,18 @@ app.get('/api/quick-dispatch/options', async (req, res) => {
   const saved = state(); const file = getLibraryFile(saved, clean(req.query?.file_id, 80));
   if (!file || file.active === false) return res.status(404).json({ error: 'Seleciona um ficheiro ativo da Biblioteca.' });
   res.json(await quickDispatchOptions(saved, file));
+});
+app.post('/api/quick-dispatch/upload', upload.single('production_file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Seleciona um ficheiro G-code ou 3MF.' });
+  const saved = state();
+  try {
+    const stored = saveQuickUploadToLibrary(saved, req.file, req.body || {});
+    const options = await quickDispatchOptions(state(), stored.file);
+    res.status(201).json({ ...stored, options, message: stored.created_part ? 'Ficheiro validado e guardado numa nova peça da Biblioteca.' : 'Ficheiro validado e guardado como nova variante na Biblioteca.' });
+  } catch (error) {
+    fs.rmSync(req.file.path, { force: true });
+    res.status(400).json({ error: error.message || 'Não foi possível validar o ficheiro de produção.' });
+  }
 });
 app.post('/api/quick-dispatch', async (req, res) => {
   const saved = state(); const file = getLibraryFile(saved, clean(req.body?.file_id, 80));

@@ -348,7 +348,7 @@ function resetTemplateForm() {
 
 async function populateFilaments() { return []; }
 async function refreshCustomers() { try { customers = await api('/api/customers'); renderCustomers(); } catch { $('customer-grid').innerHTML = '<p class="empty">Não foi possível carregar os clientes.</p>'; } }
-async function refreshFiles() { try { libraryParts = await api('/api/library-parts'); libraryFiles = libraryParts.flatMap((part) => part.gcodes || []); renderFiles(); const fileInput = $('quick-dispatch-file'); if (fileInput && !fileInput.value) fileInput.innerHTML = quickDispatchFileOptions(); if (latest.orders.length) { renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); } } catch { $('file-grid').innerHTML = '<p class="empty">Não foi possível carregar a biblioteca.</p>'; } }
+async function refreshFiles() { try { libraryParts = await api('/api/library-parts'); libraryFiles = libraryParts.flatMap((part) => part.gcodes || []); renderFiles(); const fileInput = $('quick-dispatch-file'); if (fileInput && !fileInput.value) fileInput.innerHTML = quickDispatchFileOptions(); const profileOptions = $('quick-dispatch-model-options'); if (profileOptions) profileOptions.innerHTML = quickDispatchProfileOptions(); if (latest.orders.length) { renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); } } catch { $('file-grid').innerHTML = '<p class="empty">Não foi possível carregar a biblioteca.</p>'; } }
 async function update() { $('refresh').disabled = true; try { const data = await api('/api/summary'); latest = { printers: data.printers.items, spools: data.spools.items, assignments: data.assignments || {}, orders: data.production.orders || [] }; $('printers-total').textContent = data.printers.total; $('printers-online').textContent = `${data.printers.online} online`; $('printers-printing').textContent = data.printers.printing; $('spools-total').textContent = data.spools.total; $('spools-low').textContent = data.spools.low ? `${data.spools.low} abaixo de 200 g` : 'Sem alertas'; $('live-dot').className = data.services.productionHub ? 'connected' : 'warning'; $('last-update').textContent = `Atualizado às ${new Date(data.generatedAt).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })}`; $('system-host').textContent = data.system.hostname; $('system-up').textContent = `${Math.floor(data.system.uptime_seconds / 3600)} h ativo`; $('system-memory').textContent = `${data.system.memory_used_mb} MB`; $('system-load').textContent = data.system.cpu_load_1m; renderPrinters(latest.printers); renderSpools(); renderProduction(data.production.projects, data.production.jobs); renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); } catch { $('last-update').textContent = 'Não foi possível contactar os serviços'; $('live-dot').className = 'warning'; } finally { $('refresh').disabled = false; } }
 
 $('refresh').onclick = update;
@@ -735,6 +735,11 @@ function libraryPartOptions() {
 }
 let quickDispatchData = null;
 function quickDispatchFiles() { return libraryFiles.filter((file) => file.active !== false); }
+function quickDispatchProfileOptions() {
+  const catalogModels = Object.entries(printerCatalog).flatMap(([brand, models]) => models.map((model) => `${brand} ${model}`));
+  const registeredModels = latest.printers.map((printer) => String(printer.model || '').trim()).filter(Boolean);
+  return [...new Set([...catalogModels, ...registeredModels])].sort((left, right) => left.localeCompare(right, 'pt-PT')).map((model) => `<option value="${escape(model)}"></option>`).join('');
+}
 function quickDispatchFileOptions(selected = '') {
   return ['<option value="">Selecionar G-code ou 3MF</option>', ...quickDispatchFiles().map((file) => {
     const type = /\.3mf$/i.test(file.original_name || '') ? '3MF' : 'G-code';
@@ -745,7 +750,8 @@ function quickDispatchFileOptions(selected = '') {
 function quickDispatchSummaryMarkup(data) {
   const box = $('quick-dispatch-summary'); if (!box) return;
   if (!data) {
-    box.innerHTML = '<strong>Escolhe um G-code ou 3MF da Biblioteca.</strong><small>A compatibilidade é calculada pelo perfil de impressora, material e disponibilidade.</small>';
+    box.classList.remove('warning');
+    box.innerHTML = '<strong>Escolhe ou envia um G-code ou 3MF.</strong><small>A compatibilidade é calculada pelo perfil de impressora, material e disponibilidade.</small>';
     return;
   }
   const file = data.file || {}; const materials = Array.isArray(file.metadata?.materials) && file.metadata.materials.length ? file.metadata.materials : [{ material: file.metadata?.material, color: file.metadata?.color }];
@@ -760,6 +766,23 @@ function quickDispatchSummaryMarkup(data) {
   const suggested = candidates.find((printer) => Number(printer.id) === Number(data.suggested_printer_id));
   const rows = candidates.map((printer) => `<li class="${printer.material_ready ? 'ready' : 'needs-material'}"><span class="status ${statusClass(printer.status)}"></span><strong>${escape(printer.name)}</strong><small>${escape(printer.model)} · ${escape(printer.status || 'desconhecido')}${printer.material_ready ? ' · material pronto' : ` · falta ${escape((printer.material_missing || []).join(', ') || 'material')}`}</small></li>`).join('');
   box.innerHTML = `<div><strong>${escape(file.name)}</strong><small>${escape(file.printer_model || 'Sem perfil')} · ${escape(materialLabel)}</small></div><div class="quick-dispatch-recommendation">${suggested ? `Sugestão automática: <b>${escape(suggested.name)}</b>` : 'Nenhuma impressora tem o material necessário carregado.'}</div><ul>${rows}</ul>`;
+}
+function setQuickDispatchSource(source = 'library') {
+  const librarySource = $('quick-dispatch-library-source'); const uploadSource = $('quick-dispatch-upload-source');
+  const fileInput = $('quick-dispatch-file'); const prepare = $('quick-dispatch-upload-prepare');
+  if (!librarySource || !uploadSource || !fileInput) return;
+  const sourceInput = $('quick-dispatch-source'); if (sourceInput) sourceInput.value = source;
+  const uploadMode = source === 'upload';
+  librarySource.classList.toggle('hidden', uploadMode); uploadSource.classList.toggle('hidden', !uploadMode);
+  fileInput.disabled = uploadMode; fileInput.required = !uploadMode;
+  uploadSource.querySelectorAll('input').forEach((input) => { input.disabled = !uploadMode; });
+  if (prepare) prepare.disabled = !uploadMode;
+  const profiles = $('quick-dispatch-model-options'); if (profiles) profiles.innerHTML = quickDispatchProfileOptions();
+  if (uploadMode) {
+    quickDispatchData = null;
+    const printer = $('quick-dispatch-printer'); if (printer) { printer.disabled = true; printer.innerHTML = '<option value="">Valida primeiro o novo ficheiro</option>'; }
+    quickDispatchSummaryMarkup(null);
+  }
 }
 async function refreshQuickDispatchOptions({ preservePrinter = true } = {}) {
   const fileInput = $('quick-dispatch-file'); const printerInput = $('quick-dispatch-printer'); const quantityInput = $('quick-dispatch-quantity');
@@ -786,6 +809,7 @@ function resetQuickDispatchForm() {
   const form = $('quick-dispatch-form'); if (!form) return;
   form.reset(); quickDispatchData = null;
   const fileInput = $('quick-dispatch-file'); if (fileInput) fileInput.innerHTML = quickDispatchFileOptions();
+  setQuickDispatchSource('library');
   const quantity = $('quick-dispatch-quantity'); if (quantity) { quantity.value = '1'; delete quantity.dataset.userEdited; }
   const wrap = $('quick-dispatch-printer-wrap'); if (wrap) wrap.classList.add('hidden');
   const printer = $('quick-dispatch-printer'); if (printer) { printer.disabled = true; printer.innerHTML = '<option value="">Escolhe primeiro um ficheiro</option>'; }
@@ -793,15 +817,42 @@ function resetQuickDispatchForm() {
 }
 function setupQuickDispatch() {
   const form = $('quick-dispatch-form'); if (!form) return;
-  const fileInput = $('quick-dispatch-file'); const mode = $('quick-dispatch-mode'); const printerWrap = $('quick-dispatch-printer-wrap'); const quantity = $('quick-dispatch-quantity');
+  const fileInput = $('quick-dispatch-file'); const mode = $('quick-dispatch-mode'); const printerWrap = $('quick-dispatch-printer-wrap'); const quantity = $('quick-dispatch-quantity'); const source = $('quick-dispatch-source'); const prepareUpload = $('quick-dispatch-upload-prepare');
   fileInput.innerHTML = quickDispatchFileOptions();
   fileInput.addEventListener('change', () => refreshQuickDispatchOptions({ preservePrinter: false }));
+  source.addEventListener('change', () => setQuickDispatchSource(source.value));
   mode.addEventListener('change', () => printerWrap.classList.toggle('hidden', mode.value !== 'manual'));
   quantity.addEventListener('input', () => { quantity.dataset.userEdited = 'true'; });
+  prepareUpload.addEventListener('click', async () => {
+    const uploadFile = $('quick-dispatch-upload-file').files?.[0];
+    const printerModel = $('quick-dispatch-upload-printer-model').value.trim();
+    const pieces = $('quick-dispatch-upload-quantity').value;
+    const material = $('quick-dispatch-upload-material').value.trim();
+    const color = $('quick-dispatch-upload-color').value.trim();
+    const nozzle = $('quick-dispatch-upload-nozzle').value;
+    if (!uploadFile) return toast('Seleciona um ficheiro G-code ou 3MF.', 'error');
+    if (!printerModel || !pieces || !material || !color || !nozzle) return toast('Preenche o perfil, peças por execução, material, cor e bico antes de validar.', 'error');
+    const payload = new FormData();
+    payload.append('production_file', uploadFile);
+    payload.append('part_name', $('quick-dispatch-upload-part-name').value.trim());
+    payload.append('printer_model', printerModel); payload.append('quantity', pieces); payload.append('material', material); payload.append('color', color); payload.append('nozzle', nozzle);
+    const grams = $('quick-dispatch-upload-filament-grams').value; if (grams) payload.append('filament_grams', grams);
+    const original = prepareUpload.textContent; prepareUpload.disabled = true; prepareUpload.textContent = 'A validar…';
+    try {
+      const result = await api('/api/quick-dispatch/upload', { method: 'POST', body: payload });
+      await refreshFiles();
+      source.value = 'library'; setQuickDispatchSource('library');
+      fileInput.innerHTML = quickDispatchFileOptions(result.file.id); fileInput.value = result.file.id;
+      quantity.value = String(Number(result.file.metadata?.quantity) || 1); delete quantity.dataset.userEdited;
+      await refreshQuickDispatchOptions({ preservePrinter: false });
+      toast(result.message || 'Ficheiro validado e guardado na Biblioteca.');
+    } catch (error) { toast(error.message, 'error'); }
+    finally { prepareUpload.disabled = false; prepareUpload.textContent = original; }
+  });
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(form).entries());
-    if (!values.file_id) return toast('Seleciona um G-code ou 3MF da Biblioteca.', 'error');
+    if (!values.file_id) return toast('Escolhe um ficheiro da Biblioteca ou valida primeiro um novo ficheiro.', 'error');
     if (values.mode === 'manual' && !values.printer_id) return toast('Seleciona uma impressora compatível.', 'error');
     const button = form.querySelector('button[type="submit"]'); const original = button.textContent; button.disabled = true; button.textContent = 'A enviar…';
     try {

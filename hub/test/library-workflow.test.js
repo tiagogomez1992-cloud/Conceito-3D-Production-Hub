@@ -35,6 +35,18 @@ function gcodeForm(partId, filename, quantity, printerModel, color) {
   form.append('gcode', new Blob([`; generated test\n; filament used [g] = 12\nG28\n`], { type: 'text/plain' }), filename);
   return form;
 }
+function quickUploadForm(filename = 'producao-direta.gcode') {
+  const form = new FormData();
+  form.append('part_name', 'PEÇA DIRETA DE TESTE');
+  form.append('printer_model', 'Anycubic Kobra S1 Max');
+  form.append('quantity', '2');
+  form.append('material', 'PETG');
+  form.append('color', 'Laranja');
+  form.append('nozzle', '0.6');
+  form.append('filament_grams', '18.5');
+  form.append('production_file', new Blob(['; direct upload\nG28\n'], { type: 'text/plain' }), filename);
+  return form;
+}
 function storedZip(entries) {
   const localEntries = []; const centralEntries = []; let offset = 0;
   for (const entry of entries) {
@@ -221,4 +233,25 @@ test('produção rápida filtra impressoras pelo perfil do G-code e cria trabalh
   assert.equal(queued.body.job.executions, 3);
   assert.equal(queued.body.job.produced_quantity, 9);
   assert.equal(queued.body.job.library_file_id, file.body.id);
+});
+
+test('produção rápida aceita um novo ficheiro, valida os dados e guarda-o na Biblioteca', async () => {
+  const uploaded = await json('/api/quick-dispatch/upload', { method: 'POST', body: quickUploadForm() });
+  assert.equal(uploaded.response.status, 201);
+  assert.equal(uploaded.body.created_part, true);
+  assert.equal(uploaded.body.part.name, 'PEÇA DIRETA DE TESTE');
+  assert.equal(uploaded.body.file.source, 'quick-upload');
+  assert.equal(uploaded.body.file.printer_model, 'Anycubic Kobra S1 Max');
+  assert.equal(uploaded.body.file.metadata.valid, true);
+  assert.equal(uploaded.body.file.metadata.quantity, 2);
+  assert.equal(uploaded.body.file.metadata.nozzle, 0.6);
+  assert.equal(uploaded.body.file.metadata.filament_grams, 18.5);
+  assert.equal(uploaded.body.options.compatible_printers.some((printer) => /S1 MAX/i.test(printer.model)), true);
+
+  const invalid = new FormData();
+  invalid.append('printer_model', 'Anycubic Kobra S1 Max');
+  invalid.append('production_file', new Blob(['G28\n'], { type: 'text/plain' }), 'incompleto.gcode');
+  const rejected = await json('/api/quick-dispatch/upload', { method: 'POST', body: invalid });
+  assert.equal(rejected.response.status, 400);
+  assert.match(rejected.body.error, /quantidade de peças/i);
 });
