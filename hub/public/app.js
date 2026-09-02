@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-let latest = { printers: [], spools: [], assignments: {}, orders: [] };
+let latest = { printers: [], spools: [], stock: [], assignments: {}, orders: [] };
 let customers = [];
 let libraryFiles = [];
 let libraryParts = [];
@@ -104,7 +104,7 @@ function openPrinterEditor(printerId) {
 }
 function toast(message, kind = 'success') { const t = $('toast'); t.textContent = message; t.className = `toast show ${kind}`; clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.className = 'toast'; }, 4200); }
 async function api(url, options = {}) { const r = await fetch(url, options); const body = await r.json().catch(() => ({})); if (!r.ok) throw new Error(body.error || 'O pedido não foi aceite.'); return body; }
-function selectOptions(selected) { return ['<option value="">Sem bobine associada</option>', ...latest.spools.map((s) => `<option value="${s.id}" ${Number(selected) === Number(s.id) ? 'selected' : ''}>#${s.id} · ${escape(spoolInfo(s).material)} ${escape(s.color_name || s.color || '')} · ${spoolInfo(s).remaining} g</option>`)].join(''); }
+function selectOptions(selected) { return ['<option value="">Sem material associado</option>', ...latest.spools.map((s) => `<option value="${s.id}" ${Number(selected) === Number(s.id) ? 'selected' : ''}>${s.inventory_mode === 'stock' ? 'Stock' : `#${s.id}`} · ${escape(spoolInfo(s).material)} ${escape(s.color_name || s.color || '')} · ${spoolInfo(s).remaining} g</option>`)].join(''); }
 
 function assigned(printerId) {
   const spoolId = latest.assignments?.[String(printerId)]?.spool_id;
@@ -227,7 +227,7 @@ function renderDiscovery(data) {
   const networks = (data.networks || []).map((network) => `${network.subnet}.0/24`).join(', ');
   box.innerHTML = `<div class="discovery-heading"><div><p class="eyebrow">DESCOBERTA LOCAL</p><h2>${data.printers?.length || 0} impressora(s) encontrada(s)</h2><p>Rede analisada: ${escape(networks || 'não identificada')}</p></div></div>${data.printers?.length ? `<div class="discovery-grid">${data.printers.map((printer) => { const exists = discoveredPrinterIsRegistered(printer); return `<article class="discovery-card"><span class="status ${exists ? 'offline' : 'online'}"></span><div><strong>${escape(printer.detected_as)}</strong><small>${escape(printer.ip)}${printer.port !== 80 ? `:${printer.port}` : ''}${printer.requirements ? ` · ${escape(printer.requirements)}` : ''}</small></div><button class="compact ${exists ? 'secondary' : ''}" ${exists ? 'disabled aria-disabled="true"' : `data-add-discovered='${escape(JSON.stringify(printer))}'`}>${exists ? 'Já adicionada' : 'Preparar adição'}</button></article>`; }).join('')}</div>` : '<p class="empty">Não foram encontrados serviços de impressão com API local nesta rede. Equipamentos sem modo LAN ou sem API local terão de ser adicionados manualmente.</p>'}`;
 }
-function renderSpools() { $('spool-grid').innerHTML = latest.spools.length ? latest.spools.map((s) => { const info = spoolInfo(s); const low = info.remaining > 0 && info.remaining < 200; return `<article class="spool-card"><div class="spool-swatch" style="background:${escape(s.filament?.color_hex || '#6f747a')}"></div><div><p class="eyebrow">BOBINE #${s.id}</p><h2>${escape(info.material)}</h2><p>${escape(s.filament?.vendor?.name || 'Sem fabricante')}</p></div><div class="spool-weight ${low ? 'low' : ''}"><strong>${info.remaining || 'Sem peso'}${info.remaining ? ' g' : ''}</strong><small>${low ? 'Abaixo de 200 g' : 'Disponível'}</small></div></article>`; }).join('') : '<p class="empty">Ainda não há bobines registadas no portal.</p>'; }
+function renderSpools() { const stock = latest.stock?.length ? latest.stock : latest.spools; $('spool-grid').innerHTML = stock.length ? stock.map((s) => { const info = spoolInfo(s); const low = info.remaining > 0 && info.remaining < 200; const sources = Number(s.source_count || 1); return `<article class="spool-card"><div class="spool-swatch" style="background:${escape(s.filament?.color_hex || '#6f747a')}"></div><div><p class="eyebrow">MATERIAL EM STOCK${sources > 1 ? ` · ${sources} registos` : ''}</p><h2>${escape(info.material)}${s.color_name ? ` · ${escape(s.color_name)}` : ''}</h2><p>${escape(s.filament?.vendor?.name || 'Sem fabricante')}</p></div><div class="spool-weight ${low ? 'low' : ''}"><strong>${info.remaining || 'Sem peso'}${info.remaining ? ' g' : ''}</strong><small>${low ? 'Abaixo de 200 g' : 'Disponível'}</small></div></article>`; }).join('') : '<p class="empty">Ainda não há materiais em stock no portal.</p>'; }
 function renderProduction(projects, jobs) { $('jobs-count').textContent = `${jobs.length} total`; $('projects-count').textContent = `${projects.length} total`; $('job-list').innerHTML = jobs.length ? jobs.slice(0, 12).map((j) => `<div class="data-row"><div><strong>${value(j.part_name || j.name, `Trabalho #${j.id}`)}</strong><small>${value(j.printer_name, 'Impressora não atribuída')}</small></div><span class="badge ${statusClass(j.status)}">${value(j.status)}</span></div>`).join('') : '<p class="empty">Ainda não existem trabalhos.</p>'; $('project-list').innerHTML = projects.length ? projects.slice(0, 12).map((p) => `<div class="data-row"><div><strong>${value(p.name, `Projeto #${p.id}`)}</strong><small>${value(p.description, 'Sem descrição')}</small></div><span class="badge ${Number(p.priority) > 1 ? 'printing' : statusClass(p.status)}">${Number(p.priority) > 1 ? 'urgente' : value(p.status)}</span></div>`).join('') : '<p class="empty">Ainda não existem projetos.</p>'; }
 function renderOrders() { $('orders-total').textContent = latest.orders.filter((o) => o.status !== 'completed').length; $('orders-urgent').textContent = `${latest.orders.filter((o) => Number(o.priority) === 2 && o.status !== 'completed').length} urgentes`; $('order-board').innerHTML = latest.orders.length ? latest.orders.map((o) => { const file = o.files?.[0]; const meta = file?.metadata; const source = o.document?.file_name ? `<span>PDF: ${escape(o.document.file_name)}${o.document.ocr_used ? ' · OCR' : ''}</span>` : ''; const items = o.items?.length ? `<span>${o.items.length} linha(s) lida(s) no PDF</span>` : ''; const printerOptions = ['<option value="">Atribuir impressora</option>', ...latest.printers.map((p) => `<option value="${p.id}" ${Number(o.printer_id) === Number(p.id) ? 'selected' : ''}>${escape(p.name)}</option>`)].join(''); return `<article class="order-card ${Number(o.priority) === 2 ? 'urgent' : ''}"><div class="order-top"><div><p class="eyebrow">${escape(o.id)}</p><h2>${escape(o.title)}</h2><p>${escape(o.customer || 'Sem cliente')} · ${o.due_date ? escape(o.due_date) : 'Sem prazo'}</p></div><span class="badge ${o.status === 'completed' ? 'online' : Number(o.priority) === 2 ? 'printing' : 'offline'}">${escape(o.status)}</span></div><div class="order-meta">${source}${items}${meta ? `<span>${meta.valid ? '✓ Metadados validados' : `⚠ Falta: ${escape(meta.missing.join(', '))}`}</span><span>${meta.quantity || '—'} peças · ${escape(meta.material || '—')} · bico ${meta.nozzle || '—'} mm</span>` : '<span>Sem G-code</span>'}</div><div class="order-actions"><label>Impressora<select data-order-printer="${escape(o.id)}">${printerOptions}</select></label><label class="file-upload">G-code<input type="file" accept=".gcode,.gco" data-file-order="${escape(o.id)}"><span>Enviar G-code</span></label>${o.status !== 'completed' ? `<button class="compact" data-complete-order="${escape(o.id)}">Concluir</button>` : ''}</div></article>`; }).join('') : '<p class="empty">Ainda não existem encomendas.</p>'; }
 function renderOrderRemovalButtons() { document.querySelectorAll('#order-board .order-card').forEach((card, index) => { const order = latest.orders[index]; const actions = card.querySelector('.order-actions'); if (order && actions) actions.insertAdjacentHTML('beforeend', `<button class="compact danger" data-delete-order="${escape(order.id)}">Remover</button>`); }); }
@@ -349,7 +349,7 @@ function resetTemplateForm() {
 async function populateFilaments() { return []; }
 async function refreshCustomers() { try { customers = await api('/api/customers'); renderCustomers(); } catch { $('customer-grid').innerHTML = '<p class="empty">Não foi possível carregar os clientes.</p>'; } }
 async function refreshFiles() { try { libraryParts = await api('/api/library-parts'); libraryFiles = libraryParts.flatMap((part) => part.gcodes || []); renderFiles(); const fileInput = $('quick-dispatch-file'); if (fileInput && !fileInput.value) fileInput.innerHTML = quickDispatchFileOptions(); const profileOptions = $('quick-dispatch-model-options'); if (profileOptions) profileOptions.innerHTML = quickDispatchProfileOptions(); if (latest.orders.length) { renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); } } catch { $('file-grid').innerHTML = '<p class="empty">Não foi possível carregar a biblioteca.</p>'; } }
-async function update() { $('refresh').disabled = true; try { const data = await api('/api/summary'); latest = { printers: data.printers.items, spools: data.spools.items, assignments: data.assignments || {}, orders: data.production.orders || [] }; $('printers-total').textContent = data.printers.total; $('printers-online').textContent = `${data.printers.online} online`; $('printers-printing').textContent = data.printers.printing; $('spools-total').textContent = data.spools.total; $('spools-low').textContent = data.spools.low ? `${data.spools.low} abaixo de 200 g` : 'Sem alertas'; $('live-dot').className = data.services.productionHub ? 'connected' : 'warning'; $('last-update').textContent = `Atualizado às ${new Date(data.generatedAt).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })}`; $('system-host').textContent = data.system.hostname; $('system-up').textContent = `${Math.floor(data.system.uptime_seconds / 3600)} h ativo`; $('system-memory').textContent = `${data.system.memory_used_mb} MB`; $('system-load').textContent = data.system.cpu_load_1m; renderPrinters(latest.printers); renderSpools(); renderProduction(data.production.projects, data.production.jobs); renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); } catch { $('last-update').textContent = 'Não foi possível contactar os serviços'; $('live-dot').className = 'warning'; } finally { $('refresh').disabled = false; } }
+async function update() { $('refresh').disabled = true; try { const data = await api('/api/summary'); latest = { printers: data.printers.items, spools: data.spools.items, stock: data.spools.stock || [], assignments: data.assignments || {}, orders: data.production.orders || [] }; $('printers-total').textContent = data.printers.total; $('printers-online').textContent = `${data.printers.online} online`; $('printers-printing').textContent = data.printers.printing; $('spools-total').textContent = data.spools.total; $('spools-low').textContent = data.spools.low ? `${data.spools.low} abaixo de 200 g` : 'Sem alertas'; $('live-dot').className = data.services.productionHub ? 'connected' : 'warning'; $('last-update').textContent = `Atualizado às ${new Date(data.generatedAt).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })}`; $('system-host').textContent = data.system.hostname; $('system-up').textContent = `${Math.floor(data.system.uptime_seconds / 3600)} h ativo`; $('system-memory').textContent = `${data.system.memory_used_mb} MB`; $('system-load').textContent = data.system.cpu_load_1m; renderPrinters(latest.printers); renderSpools(); renderProduction(data.production.projects, data.production.jobs); renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); } catch { $('last-update').textContent = 'Não foi possível contactar os serviços'; $('live-dot').className = 'warning'; } finally { $('refresh').disabled = false; } }
 
 $('refresh').onclick = update;
 $('discover-printers').onclick = async () => { const button = $('discover-printers'); button.disabled = true; button.textContent = 'A analisar…'; try { renderDiscovery(await api('/api/printers/discover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subnet: $('discovery-subnet').value }) })); } catch (error) { toast(error.message, 'error'); } finally { button.disabled = false; button.textContent = 'Analisar rede local'; } };
@@ -510,7 +510,7 @@ for (const id of ['order-form', 'project-form', 'printer-form', 'spool-form', 'c
       if (!String(form.title || '').trim()) throw new Error('Indica um nome ou seleciona um PDF com referência.');
     }
     const result = await api(endpoint, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
-    formElement.reset(); if (id === 'printer-form') { resetPrinterFormMode(); setPrinterCatalogSelection(); } if (id === 'order-form') resetOrderPdfAnalysis(); formElement.classList.add('hidden'); if (id === 'customer-form') { resetTemplateForm(); await refreshCustomers(); } if (id === 'library-part-form') await refreshFiles(); toast(id === 'customer-form' ? 'Cliente e modelo guardados.' : id === 'library-part-form' ? 'Peça criada. Agora adiciona os G-codes.' : id === 'printer-form' ? wasEditingPrinter ? 'Impressora atualizada.' : 'Impressora adicionada ao Production Hub.' : id === 'spool-form' ? 'Bobine adicionada ao inventário do portal.' : result.status === 'draft' ? 'Rascunho criado. Valida as peças antes de enviar para produção.' : 'Encomenda criada com os dados confirmados.'); update();
+    formElement.reset(); if (id === 'printer-form') { resetPrinterFormMode(); setPrinterCatalogSelection(); } if (id === 'order-form') resetOrderPdfAnalysis(); formElement.classList.add('hidden'); if (id === 'customer-form') { resetTemplateForm(); await refreshCustomers(); } if (id === 'library-part-form') await refreshFiles(); toast(id === 'customer-form' ? 'Cliente e modelo guardados.' : id === 'library-part-form' ? 'Peça criada. Agora adiciona os G-codes.' : id === 'printer-form' ? wasEditingPrinter ? 'Impressora atualizada.' : 'Impressora adicionada ao Production Hub.' : id === 'spool-form' ? result.merged ? `${result.added_weight} g somados ao stock existente.` : 'Material adicionado ao stock do portal.' : result.status === 'draft' ? 'Rascunho criado. Valida as peças antes de enviar para produção.' : 'Encomenda criada com os dados confirmados.'); update();
   } catch (error) { toast(error.message, 'error'); }
 });
 document.addEventListener('submit', async (event) => {
@@ -740,6 +740,35 @@ function quickDispatchProfileOptions() {
   const registeredModels = latest.printers.map((printer) => String(printer.model || '').trim()).filter(Boolean);
   return [...new Set([...catalogModels, ...registeredModels])].sort((left, right) => left.localeCompare(right, 'pt-PT')).map((model) => `<option value="${escape(model)}"></option>`).join('');
 }
+function quickDispatchUploadMaterials() {
+  return [...document.querySelectorAll('[data-quick-dispatch-material-row]')].map((row) => ({
+    material: row.querySelector('[data-quick-dispatch-material]')?.value.trim() || '',
+    color: row.querySelector('[data-quick-dispatch-color]')?.value.trim() || '',
+  }));
+}
+function quickDispatchMaterialPaint(value) { return /^#[0-9a-f]{6}$/i.test(String(value || '').trim()) ? String(value).trim() : '#374049'; }
+function renderQuickDispatchUploadMaterials(entries = [{ material: '', color: '' }]) {
+  const rows = $('quick-dispatch-upload-material-rows'); if (!rows) return;
+  const items = (Array.isArray(entries) && entries.length ? entries : [{ material: '', color: '' }]).map((item) => ({ material: String(item?.material || '').trim(), color: String(item?.color || item?.color_hex || '').trim() }));
+  const enabled = $('quick-dispatch-source')?.value === 'upload';
+  rows.innerHTML = items.map((item, index) => `<div class="quick-dispatch-material-row" data-quick-dispatch-material-row><span class="material-swatch" style="--slot-color:${escape(quickDispatchMaterialPaint(item.color))}"></span><label>Material<input data-quick-dispatch-material type="text" maxlength="80" value="${escape(item.material)}" placeholder="Ex.: PETG" ${enabled ? '' : 'disabled'}></label><label>Cor<input data-quick-dispatch-color type="text" maxlength="80" value="${escape(item.color)}" placeholder="Ex.: Preto ou #FF6A00" ${enabled ? '' : 'disabled'}></label></div>`).join('');
+  rows.querySelectorAll('[data-quick-dispatch-color]').forEach((input) => input.addEventListener('input', () => { const swatch = input.closest('[data-quick-dispatch-material-row]')?.querySelector('.material-swatch'); if (swatch) swatch.style.setProperty('--slot-color', quickDispatchMaterialPaint(input.value)); }));
+}
+async function inspectQuickDispatchUpload() {
+  const input = $('quick-dispatch-upload-file'); const uploadFile = input?.files?.[0];
+  if (!uploadFile) return;
+  const payload = new FormData(); payload.append('production_file', uploadFile);
+  try {
+    const result = await api('/api/quick-dispatch/inspect', { method: 'POST', body: payload });
+    const metadata = result.metadata || {}; const detected = Array.isArray(metadata.materials) && metadata.materials.length ? metadata.materials : [{ material: metadata.material || '', color: metadata.color || '' }];
+    renderQuickDispatchUploadMaterials(detected);
+    if (metadata.quantity) $('quick-dispatch-upload-quantity').value = String(metadata.quantity);
+    if (metadata.nozzle) $('quick-dispatch-upload-nozzle').value = String(metadata.nozzle);
+    if (metadata.filament_grams) $('quick-dispatch-upload-filament-grams').value = String(metadata.filament_grams);
+    const label = detected.length > 1 ? `${detected.length} materiais lidos do 3MF. Confirma cada linha.` : 'Dados do ficheiro lidos. Confirma os campos antes de validar.';
+    toast(label);
+  } catch (error) { renderQuickDispatchUploadMaterials(); toast(error.message, 'error'); }
+}
 function quickDispatchFileOptions(selected = '') {
   return ['<option value="">Selecionar G-code ou 3MF</option>', ...quickDispatchFiles().map((file) => {
     const type = /\.3mf$/i.test(file.original_name || '') ? '3MF' : 'G-code';
@@ -779,6 +808,7 @@ function setQuickDispatchSource(source = 'library') {
   if (prepare) prepare.disabled = !uploadMode;
   const profiles = $('quick-dispatch-model-options'); if (profiles) profiles.innerHTML = quickDispatchProfileOptions();
   if (uploadMode) {
+    if (!$('quick-dispatch-upload-material-rows')?.children.length) renderQuickDispatchUploadMaterials();
     quickDispatchData = null;
     const printer = $('quick-dispatch-printer'); if (printer) { printer.disabled = true; printer.innerHTML = '<option value="">Valida primeiro o novo ficheiro</option>'; }
     quickDispatchSummaryMarkup(null);
@@ -809,6 +839,7 @@ function resetQuickDispatchForm() {
   const form = $('quick-dispatch-form'); if (!form) return;
   form.reset(); quickDispatchData = null;
   const fileInput = $('quick-dispatch-file'); if (fileInput) fileInput.innerHTML = quickDispatchFileOptions();
+  renderQuickDispatchUploadMaterials();
   setQuickDispatchSource('library');
   const quantity = $('quick-dispatch-quantity'); if (quantity) { quantity.value = '1'; delete quantity.dataset.userEdited; }
   const wrap = $('quick-dispatch-printer-wrap'); if (wrap) wrap.classList.add('hidden');
@@ -819,23 +850,24 @@ function setupQuickDispatch() {
   const form = $('quick-dispatch-form'); if (!form) return;
   const fileInput = $('quick-dispatch-file'); const mode = $('quick-dispatch-mode'); const printerWrap = $('quick-dispatch-printer-wrap'); const quantity = $('quick-dispatch-quantity'); const source = $('quick-dispatch-source'); const prepareUpload = $('quick-dispatch-upload-prepare');
   fileInput.innerHTML = quickDispatchFileOptions();
+  renderQuickDispatchUploadMaterials();
   fileInput.addEventListener('change', () => refreshQuickDispatchOptions({ preservePrinter: false }));
   source.addEventListener('change', () => setQuickDispatchSource(source.value));
+  $('quick-dispatch-upload-file').addEventListener('change', inspectQuickDispatchUpload);
   mode.addEventListener('change', () => printerWrap.classList.toggle('hidden', mode.value !== 'manual'));
   quantity.addEventListener('input', () => { quantity.dataset.userEdited = 'true'; });
   prepareUpload.addEventListener('click', async () => {
     const uploadFile = $('quick-dispatch-upload-file').files?.[0];
     const printerModel = $('quick-dispatch-upload-printer-model').value.trim();
     const pieces = $('quick-dispatch-upload-quantity').value;
-    const material = $('quick-dispatch-upload-material').value.trim();
-    const color = $('quick-dispatch-upload-color').value.trim();
+    const materials = quickDispatchUploadMaterials(); const primaryMaterial = materials[0] || { material: '', color: '' };
     const nozzle = $('quick-dispatch-upload-nozzle').value;
     if (!uploadFile) return toast('Seleciona um ficheiro G-code ou 3MF.', 'error');
-    if (!printerModel || !pieces || !material || !color || !nozzle) return toast('Preenche o perfil, peças por execução, material, cor e bico antes de validar.', 'error');
+    if (!printerModel || !pieces || !nozzle || !materials.length || materials.some((item) => !item.material || !item.color)) return toast('Preenche o perfil, peças por execução, todos os materiais/cores e o bico antes de validar.', 'error');
     const payload = new FormData();
     payload.append('production_file', uploadFile);
     payload.append('part_name', $('quick-dispatch-upload-part-name').value.trim());
-    payload.append('printer_model', printerModel); payload.append('quantity', pieces); payload.append('material', material); payload.append('color', color); payload.append('nozzle', nozzle);
+    payload.append('printer_model', printerModel); payload.append('quantity', pieces); payload.append('material', primaryMaterial.material); payload.append('color', primaryMaterial.color); payload.append('materials', JSON.stringify(materials)); payload.append('nozzle', nozzle);
     const grams = $('quick-dispatch-upload-filament-grams').value; if (grams) payload.append('filament_grams', grams);
     const original = prepareUpload.textContent; prepareUpload.disabled = true; prepareUpload.textContent = 'A validar…';
     try {

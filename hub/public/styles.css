@@ -54,6 +54,15 @@ header { display:flex; justify-content:space-between; align-items:center; paddin
 .quick-dispatch-upload-copy strong { color:var(--p3-white,#f5f5f2); font-size:.88rem; text-transform:uppercase; letter-spacing:.04em; }
 .quick-dispatch-upload-copy small { color:#aebbc8; font-size:.76rem; line-height:1.4; }
 .quick-dispatch-upload-source button { align-self:end; min-height:42px; }
+.quick-dispatch-upload-materials { grid-column:1/-1; display:grid; gap:9px; padding:11px; border:1px solid #30414b; border-radius:6px; background:#0f171c; }
+.quick-dispatch-upload-materials>div:first-child { display:grid; gap:3px; }
+.quick-dispatch-upload-materials strong { color:#f5f5f2; font-size:.78rem; text-transform:uppercase; letter-spacing:.05em; }
+.quick-dispatch-upload-materials small { color:#aab7bf; font-size:.72rem; line-height:1.35; }
+#quick-dispatch-upload-material-rows { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:8px; }
+.quick-dispatch-material-row { display:grid; grid-template-columns:18px minmax(0,1fr) minmax(0,1fr); align-items:end; gap:8px; padding:9px; border:1px solid #2b3941; border-radius:5px; background:#101417; }
+.quick-dispatch-material-row .material-swatch { margin-bottom:8px; }
+.quick-dispatch-material-row label { display:grid; gap:5px; color:#aebbc8; font-size:.65rem; text-transform:uppercase; letter-spacing:.05em; }
+.quick-dispatch-material-row input { min-width:0; }
 .quick-dispatch-summary { grid-column:1/-1; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px 18px; padding:13px; border:1px solid #1e5f94; border-left:3px solid var(--p3-blue,#008bff); border-radius:6px; background:#0c171e; }
 .quick-dispatch-summary>div:first-child { min-width:0; }
 .quick-dispatch-summary strong,.quick-dispatch-summary small { display:block; }
@@ -69,7 +78,7 @@ header { display:flex; justify-content:space-between; align-items:center; paddin
 .quick-dispatch-summary li small { margin-top:2px; overflow-wrap:anywhere; line-height:1.35; }
 .quick-dispatch-summary li.needs-material { border-color:#604a30; }
 .quick-dispatch-summary li.needs-material small { color:#e0b47e; }
-@media (max-width:700px) { .quick-dispatch-form,.quick-dispatch-source,.quick-dispatch-upload-source { grid-template-columns:1fr; }.quick-dispatch-summary { grid-template-columns:1fr; }.quick-dispatch-recommendation { text-align:left; }.quick-dispatch-summary ul { grid-template-columns:1fr; } }
+@media (max-width:700px) { .quick-dispatch-form,.quick-dispatch-source,.quick-dispatch-upload-source { grid-template-columns:1fr; }.quick-dispatch-summary { grid-template-columns:1fr; }.quick-dispatch-recommendation { text-align:left; }.quick-dispatch-summary ul,#quick-dispatch-upload-material-rows { grid-template-columns:1fr; }.quick-dispatch-material-row { grid-template-columns:18px minmax(0,1fr); }.quick-dispatch-material-row label:last-child { grid-column:2; } }
 
 /* Pro 3D World production console — applied over the existing functional UI. */
 :root { --p3-charcoal:#1a1a1a; --p3-black:#0a0c0e; --p3-panel:#111416; --p3-line:#34393e; --p3-blue:#008bff; --p3-orange:#ff6a00; --p3-white:#f5f5f2; --p3-muted:#9ea5aa; color-scheme:dark; }

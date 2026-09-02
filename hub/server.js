@@ -222,6 +222,13 @@ function materialEntries(entries) {
     return { slot: index + 1, material, color: color_hex || color, color_hex: color_hex || null };
   }).filter(Boolean);
 }
+function suppliedMaterialEntries(supplied = {}) {
+  let entries = supplied?.materials;
+  if (typeof entries === 'string') {
+    try { entries = JSON.parse(entries); } catch { entries = []; }
+  }
+  return Array.isArray(entries) ? materialEntries(entries) : [];
+}
 function metadataResult({ quantity, material, color, nozzle, filament, materials = [], source = 'gcode', warnings = [] }) {
   const normalizedMaterials = materialEntries(materials.length ? materials : [{ material, color }]);
   const primary = normalizedMaterials[0] || { material: clean(material, 80), color: clean(color, 80), color_hex: hexColor(color) || null };
@@ -245,12 +252,13 @@ function metadataResult({ quantity, material, color, nozzle, filament, materials
 }
 function gcodeMetadata(contents, supplied = {}) {
   const find = (patterns) => patterns.map((pattern) => contents.match(pattern)?.[1]?.trim()).find(Boolean) || null;
+  const suppliedMaterials = suppliedMaterialEntries(supplied);
   const quantity = number(supplied.quantity) || number(find([/(?:quantidade|quantity|copies|pieces|peças|objects?)\s*[:=]\s*(\d+)/im]));
-  const material = clean(supplied.material || find([/(?:filament[_ ]?(?:type|material)|material|tipo de filamento)\s*[:=]\s*([^\r\n;]+)/im]), 80) || null;
-  const color = clean(supplied.color || find([/(?:filament[_ ]?colou?r|cor(?: do filamento)?)\s*[:=]\s*([^\r\n;]+)/im]), 80) || null;
+  const material = clean(supplied.material || suppliedMaterials[0]?.material || find([/(?:filament[_ ]?(?:type|material)|material|tipo de filamento)\s*[:=]\s*([^\r\n;]+)/im]), 80) || null;
+  const color = clean(supplied.color || suppliedMaterials[0]?.color || find([/(?:filament[_ ]?colou?r|cor(?: do filamento)?)\s*[:=]\s*([^\r\n;]+)/im]), 80) || null;
   const nozzle = number(supplied.nozzle) || number(find([/(?:nozzle[_ ]?(?:diameter|size)?|bico(?:[_ ]?(?:diameter|size))?)\s*[:=]\s*([0-9]+(?:[\.,][0-9]+)?)/im]));
   const filament = number(supplied.filament_grams) || number(find([/(?:total filament used \[g\]|filament used \[g\]|filament_weight_total)\s*[:=]\s*([0-9]+(?:[\.,][0-9]+)?)/im]));
-  return metadataResult({ quantity, material, color, nozzle, filament, source: 'gcode' });
+  return metadataResult({ quantity, material, color, nozzle, filament, materials: suppliedMaterials.length ? suppliedMaterials : [{ material, color }], source: 'gcode' });
 }
 
 function zipEntries(buffer) {
@@ -321,8 +329,9 @@ function metadataFrom3mf(buffer, supplied = {}) {
   const colors = jsonArraySetting(projectSettings, 'filament_colour').concat(jsonArraySetting(projectSettings, 'filament_color'));
   const profileMaterials = materialTypes.map((material, index) => ({ material, color: colors[index] || '', color_hex: colors[index] || '' }));
   const modelMaterials = xmlMaterialEntries(model);
-  let materials = materialEntries(profileMaterials.length ? profileMaterials : (modelMaterials.length ? modelMaterials : fromGcode.materials));
-  if (clean(supplied.material, 80) || clean(supplied.color, 80)) {
+  const suppliedMaterials = suppliedMaterialEntries(supplied);
+  let materials = suppliedMaterials.length ? suppliedMaterials : materialEntries(profileMaterials.length ? profileMaterials : (modelMaterials.length ? modelMaterials : fromGcode.materials));
+  if (!suppliedMaterials.length && (clean(supplied.material, 80) || clean(supplied.color, 80))) {
     const first = materials[0] || {};
     materials = materialEntries([{ ...first, material: clean(supplied.material, 80) || first.material, color: clean(supplied.color, 80) || first.color, color_hex: clean(supplied.color, 80) || first.color_hex }, ...materials.slice(1)]);
   }
@@ -1354,6 +1363,19 @@ function localSpool(item) {
   const initial = Number(item.initial_weight || 0); const used = Number(item.used_weight || 0);
   return { ...item, remaining_weight: Math.max(0, Number(item.remaining_weight ?? initial - used)), filament: { material: item.material || 'Material não definido', color_hex: item.color_hex || '#6f747a', vendor: { name: item.brand || 'Sem fabricante' } } };
 }
+function materialStock(items) {
+  const groups = new Map();
+  for (const spool of items) {
+    const material = clean(spool.material || spool.filament?.material, 80) || 'Material não definido';
+    const color = clean(spool.color_name || spool.color || '', 80) || 'Sem cor';
+    const brand = clean(spool.brand || spool.filament?.vendor?.name || '', 80);
+    const key = `${normalizedMaterial(material)}|${normalizedColor(color)}|${brand.toLowerCase()}`;
+    const group = groups.get(key) || { id: `stock:${key}`, material, color_name: color, color_hex: spool.color_hex || spool.filament?.color_hex || '#6f747a', brand, remaining_weight: 0, initial_weight: 0, source_count: 0, spool_ids: [], filament: { material, color_hex: spool.color_hex || spool.filament?.color_hex || '#6f747a', vendor: { name: brand || 'Sem fabricante' } } };
+    group.remaining_weight += Math.max(0, Number(spool.remaining_weight || 0)); group.initial_weight += Math.max(0, Number(spool.initial_weight || 0)); group.source_count += 1; group.spool_ids.push(spool.id);
+    groups.set(key, group);
+  }
+  return [...groups.values()].map((item) => ({ ...item, remaining_weight: Math.round(item.remaining_weight), initial_weight: Math.round(item.initial_weight) })).sort((left, right) => `${left.material} ${left.color_name}`.localeCompare(`${right.material} ${right.color_name}`, 'pt-PT'));
+}
 const localFilamentCatalog = [
   { id: 1, material: 'PLA', color_name: 'Preto', color_hex: '#1b1b1b', name: 'PLA Preto' },
   { id: 2, material: 'PETG', color_name: 'Preto', color_hex: '#1b1b1b', name: 'PETG Preto' },
@@ -1562,11 +1584,12 @@ async function displayStatus() {
 
 app.get('/api/summary', async (_req, res) => {
   const saved = state(); const printerItems = await managedPrinterSnapshots(saved); const spoolItems = saved.spools.map(localSpool);
+  const stockItems = materialStock(spoolItems);
   const online = new Set(['IDLE', 'PRINTING', 'FINISHED', 'PAUSED', 'ONLINE']);
   const orders = [...saved.orders].sort((a, b) => Number(b.priority) - Number(a.priority) || String(a.due_date || '9999').localeCompare(String(b.due_date || '9999')));
   const projects = [...saved.projects].sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || Number(b.id) - Number(a.id));
   const jobs = [...saved.jobs].map((job) => ({ ...job, part_name: getManagedPart(saved, job.part_id)?.name || null, printer_name: getManagedPrinter(saved, job.printer_id)?.name || null }));
-  res.json({ generatedAt: new Date().toISOString(), services: { productionHub: true }, system: { hostname: os.hostname(), uptime_seconds: os.uptime(), memory_total_mb: Math.round(os.totalmem() / 1048576), memory_used_mb: Math.round((os.totalmem() - os.freemem()) / 1048576), cpu_load_1m: Number(os.loadavg()[0].toFixed(2)) }, printers: { total: printerItems.length, online: printerItems.filter((item) => online.has(String(item.status || '').toUpperCase())).length, printing: printerItems.filter((item) => String(item.status || '').toUpperCase() === 'PRINTING').length, items: printerItems }, spools: { total: spoolItems.length, low: spoolItems.filter((item) => Number(item.remaining_weight || 0) > 0 && Number(item.remaining_weight || 0) < 200).length, items: spoolItems }, production: { projects, jobs, orders }, assignments: saved.assignments, consumption: saved.consumption.slice(0, 20) });
+  res.json({ generatedAt: new Date().toISOString(), services: { productionHub: true }, system: { hostname: os.hostname(), uptime_seconds: os.uptime(), memory_total_mb: Math.round(os.totalmem() / 1048576), memory_used_mb: Math.round((os.totalmem() - os.freemem()) / 1048576), cpu_load_1m: Number(os.loadavg()[0].toFixed(2)) }, printers: { total: printerItems.length, online: printerItems.filter((item) => online.has(String(item.status || '').toUpperCase())).length, printing: printerItems.filter((item) => String(item.status || '').toUpperCase() === 'PRINTING').length, items: printerItems }, spools: { total: stockItems.length, low: stockItems.filter((item) => Number(item.remaining_weight || 0) > 0 && Number(item.remaining_weight || 0) < 200).length, items: spoolItems, stock: stockItems }, production: { projects, jobs, orders }, assignments: saved.assignments, consumption: saved.consumption.slice(0, 20) });
 });
 
 app.get('/api/display/status', async (req, res) => {
@@ -1635,6 +1658,15 @@ app.get('/api/quick-dispatch/options', async (req, res) => {
   const saved = state(); const file = getLibraryFile(saved, clean(req.query?.file_id, 80));
   if (!file || file.active === false) return res.status(404).json({ error: 'Seleciona um ficheiro ativo da Biblioteca.' });
   res.json(await quickDispatchOptions(saved, file));
+});
+app.post('/api/quick-dispatch/inspect', upload.single('production_file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Seleciona um ficheiro G-code ou 3MF.' });
+  try {
+    const metadata = productionFileMetadata(req.file.path, req.file.originalname, req.body || {});
+    res.json({ name: req.file.originalname, type: path.extname(req.file.originalname).toLowerCase() === '.3mf' ? '3mf' : 'gcode', metadata });
+  } catch (error) {
+    res.status(400).json({ error: error.message || 'Não foi possível ler o ficheiro de produção.' });
+  } finally { fs.rmSync(req.file.path, { force: true }); }
 });
 app.post('/api/quick-dispatch/upload', upload.single('production_file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Seleciona um ficheiro G-code ou 3MF.' });
@@ -2265,10 +2297,18 @@ app.post('/api/scheduler/dispatch', async (_req, res) => forwarded(res, await sa
 app.post('/api/spools', (req, res) => {
   const material = clean(req.body?.material, 80); const color = clean(req.body?.color, 80);
   const weight = Math.max(1, Number(req.body?.remaining_weight || req.body?.initial_weight || 1000));
-  if (!material || !color) return res.status(400).json({ error: 'Indica o material e a cor da bobine.' });
+  if (!material || !color) return res.status(400).json({ error: 'Indica o material e a cor do stock.' });
   const saved = state(); const now = new Date().toISOString();
-  const spool = { id: nextId(saved.spools), material, color_name: color, color_hex: clean(req.body?.color_hex, 16) || '#6f747a', brand: clean(req.body?.brand, 80), initial_weight: weight, used_weight: 0, remaining_weight: weight, created_at: now, updated_at: now };
-  saved.spools.push(spool); save(saved); res.status(201).json(localSpool(spool));
+  const brand = clean(req.body?.brand, 80);
+  const existing = saved.spools.find((item) => normalizedMaterial(item.material) === normalizedMaterial(material) && normalizedColor(item.color_name || item.color) === normalizedColor(color) && clean(item.brand, 80).toLowerCase() === brand.toLowerCase());
+  if (existing) {
+    existing.initial_weight = Number(existing.initial_weight || 0) + weight;
+    existing.remaining_weight = Number(existing.remaining_weight || 0) + weight;
+    existing.inventory_mode = 'stock'; existing.updated_at = now; save(saved);
+    return res.json({ ...localSpool(existing), merged: true, added_weight: weight });
+  }
+  const spool = { id: nextId(saved.spools), material, color_name: color, color_hex: clean(req.body?.color_hex, 16) || '#6f747a', brand, inventory_mode: 'stock', initial_weight: weight, used_weight: 0, remaining_weight: weight, created_at: now, updated_at: now };
+  saved.spools.push(spool); save(saved); res.status(201).json({ ...localSpool(spool), merged: false, added_weight: weight });
 });
 app.get('/api/filaments', (_req, res) => res.json(localFilamentCatalog));
 app.post('/api/assignments', (req, res) => { const { printer_id, spool_id } = req.body || {}; if (!printer_id || !spool_id) return res.status(400).json({ error: 'Impressora e bobine são obrigatórias.' }); const saved = state(); saved.assignments[String(printer_id)] = { spool_id: Number(spool_id), assigned_at: new Date().toISOString() }; save(saved); res.status(201).json(saved.assignments[String(printer_id)]); });

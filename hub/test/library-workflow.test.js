@@ -47,6 +47,16 @@ function quickUploadForm(filename = 'producao-direta.gcode') {
   form.append('production_file', new Blob(['; direct upload\nG28\n'], { type: 'text/plain' }), filename);
   return form;
 }
+function quickMultiMaterialForm() {
+  const form = new FormData();
+  form.append('printer_model', 'Anycubic Kobra S1 Max');
+  form.append('production_file', new Blob([storedZip([
+    { name: '3D/3dmodel.model', data: '<model><resources><basematerials id="1"><base name="PETG" displaycolor="#FF6A00"/><base name="PLA" displaycolor="#008BFF"/></basematerials></resources><build><item objectid="1"/><item objectid="2"/></build></model>' },
+    { name: 'Metadata/project_settings.config', data: '{"filament_type":["PETG","PLA"],"filament_colour":["#FF6A00","#008BFF"],"nozzle_diameter":["0.6"]}' },
+    { name: 'Metadata/plate_1.gcode', data: '; total filament used [g] = 62.5\n' },
+  ])], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' }), 'multicolor-direto.3mf');
+  return form;
+}
 function storedZip(entries) {
   const localEntries = []; const centralEntries = []; let offset = 0;
   for (const entry of entries) {
@@ -254,4 +264,34 @@ test('produção rápida aceita um novo ficheiro, valida os dados e guarda-o na 
   const rejected = await json('/api/quick-dispatch/upload', { method: 'POST', body: invalid });
   assert.equal(rejected.response.status, 400);
   assert.match(rejected.body.error, /quantidade de peças/i);
+});
+
+test('produção rápida lê todos os materiais de um 3MF e aceita a confirmação por linha', async () => {
+  const inspected = await json('/api/quick-dispatch/inspect', { method: 'POST', body: quickMultiMaterialForm() });
+  assert.equal(inspected.response.status, 200);
+  assert.equal(inspected.body.metadata.quantity, 2);
+  assert.equal(inspected.body.metadata.nozzle, 0.6);
+  assert.deepEqual(inspected.body.metadata.materials.map((item) => [item.material, item.color_hex]), [['PETG', '#FF6A00'], ['PLA', '#008BFF']]);
+
+  const upload = quickMultiMaterialForm();
+  upload.append('part_name', 'PEÇA MULTICOLOR DIRETA');
+  upload.append('quantity', '2');
+  upload.append('nozzle', '0.6');
+  upload.append('materials', JSON.stringify([{ material: 'PETG', color: '#FF6A00' }, { material: 'PLA', color: '#008BFF' }]));
+  const saved = await json('/api/quick-dispatch/upload', { method: 'POST', body: upload });
+  assert.equal(saved.response.status, 201);
+  assert.equal(saved.body.file.metadata.materials.length, 2);
+  assert.deepEqual(saved.body.file.metadata.materials.map((item) => item.material), ['PETG', 'PLA']);
+});
+
+test('stock de filamento agrega entradas do mesmo material e cor', async () => {
+  const first = await json('/api/spools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ material: 'ASA', color: 'Cinza', brand: 'Pro3DWorld', remaining_weight: 2000 }) });
+  assert.equal(first.response.status, 201);
+  const second = await json('/api/spools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ material: 'ASA', color: 'Cinza', brand: 'Pro3DWorld', remaining_weight: 500 }) });
+  assert.equal(second.response.status, 200);
+  assert.equal(second.body.merged, true);
+  assert.equal(second.body.remaining_weight, 2500);
+  const summary = await json('/api/summary');
+  const asa = summary.body.spools.stock.find((item) => item.material === 'ASA' && item.color_name === 'Cinza');
+  assert.equal(asa.remaining_weight, 2500);
 });
