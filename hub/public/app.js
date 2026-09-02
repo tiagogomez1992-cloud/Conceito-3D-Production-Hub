@@ -11,7 +11,7 @@ let pendingOrderPdfDraft = null;
 let pendingOrderPdfSignature = '';
 const escape = (v) => String(v ?? '').replace(/[&<>'"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
 const value = (v, fallback = '—') => v === undefined || v === null || v === '' ? fallback : escape(v);
-const statusClass = (v) => String(v || '').toLowerCase() === 'printing' ? 'printing' : ['idle', 'finished', 'online', 'paused', 'completed'].includes(String(v || '').toLowerCase()) ? 'online' : 'offline';
+const statusClass = (v) => String(v || '').toLowerCase() === 'printing' ? 'printing' : ['queued', 'waiting', 'awaiting_material'].includes(String(v || '').toLowerCase()) ? 'printing' : ['idle', 'finished', 'online', 'paused', 'completed'].includes(String(v || '').toLowerCase()) ? 'online' : 'offline';
 const spoolInfo = (spool) => ({ material: spool?.filament?.material || spool?.filament?.name || 'Material não definido', remaining: Math.round(Number(spool?.remaining_weight || 0)) });
 const customModelValue = '__custom__';
 const printerCatalog = Object.freeze({
@@ -348,7 +348,7 @@ function resetTemplateForm() {
 
 async function populateFilaments() { return []; }
 async function refreshCustomers() { try { customers = await api('/api/customers'); renderCustomers(); } catch { $('customer-grid').innerHTML = '<p class="empty">Não foi possível carregar os clientes.</p>'; } }
-async function refreshFiles() { try { libraryParts = await api('/api/library-parts'); libraryFiles = libraryParts.flatMap((part) => part.gcodes || []); renderFiles(); if (latest.orders.length) { renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); } } catch { $('file-grid').innerHTML = '<p class="empty">Não foi possível carregar a biblioteca.</p>'; } }
+async function refreshFiles() { try { libraryParts = await api('/api/library-parts'); libraryFiles = libraryParts.flatMap((part) => part.gcodes || []); renderFiles(); const fileInput = $('quick-dispatch-file'); if (fileInput && !fileInput.value) fileInput.innerHTML = quickDispatchFileOptions(); if (latest.orders.length) { renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); } } catch { $('file-grid').innerHTML = '<p class="empty">Não foi possível carregar a biblioteca.</p>'; } }
 async function update() { $('refresh').disabled = true; try { const data = await api('/api/summary'); latest = { printers: data.printers.items, spools: data.spools.items, assignments: data.assignments || {}, orders: data.production.orders || [] }; $('printers-total').textContent = data.printers.total; $('printers-online').textContent = `${data.printers.online} online`; $('printers-printing').textContent = data.printers.printing; $('spools-total').textContent = data.spools.total; $('spools-low').textContent = data.spools.low ? `${data.spools.low} abaixo de 200 g` : 'Sem alertas'; $('live-dot').className = data.services.productionHub ? 'connected' : 'warning'; $('last-update').textContent = `Atualizado às ${new Date(data.generatedAt).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })}`; $('system-host').textContent = data.system.hostname; $('system-up').textContent = `${Math.floor(data.system.uptime_seconds / 3600)} h ativo`; $('system-memory').textContent = `${data.system.memory_used_mb} MB`; $('system-load').textContent = data.system.cpu_load_1m; renderPrinters(latest.printers); renderSpools(); renderProduction(data.production.projects, data.production.jobs); renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); } catch { $('last-update').textContent = 'Não foi possível contactar os serviços'; $('live-dot').className = 'warning'; } finally { $('refresh').disabled = false; } }
 
 $('refresh').onclick = update;
@@ -376,8 +376,8 @@ document.addEventListener('click', async (event) => {
   if (openPrinterList) { document.querySelector('[data-view="printers"]')?.click(); window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
   if (openPrinterPage) { openPrinterDetailPage(openPrinterPage.dataset.openPrinter); return; }
   if (closePrinterPage) { closePrinterDetailPage(); return; }
-  if (open) { $(open.dataset.openForm).classList.remove('hidden'); if (open.dataset.openForm === 'printer-form') { $('printer-form').reset(); resetPrinterFormMode(); setPrinterCatalogSelection(); } if (open.dataset.openForm === 'order-form') { $('order-form').reset(); resetOrderPdfAnalysis(); } }
-  if (close) { $(close.dataset.closeForm).classList.add('hidden'); if (close.dataset.closeForm === 'customer-form') resetTemplateForm(); if (close.dataset.closeForm === 'printer-form') { $('printer-form').reset(); resetPrinterFormMode(); setPrinterCatalogSelection(); } if (close.dataset.closeForm === 'order-form') { $('order-form').reset(); resetOrderPdfAnalysis(); } }
+  if (open) { $(open.dataset.openForm).classList.remove('hidden'); if (open.dataset.openForm === 'printer-form') { $('printer-form').reset(); resetPrinterFormMode(); setPrinterCatalogSelection(); } if (open.dataset.openForm === 'order-form') { $('order-form').reset(); resetOrderPdfAnalysis(); } if (open.dataset.openForm === 'quick-dispatch-form') { resetQuickDispatchForm(); } }
+  if (close) { $(close.dataset.closeForm).classList.add('hidden'); if (close.dataset.closeForm === 'customer-form') resetTemplateForm(); if (close.dataset.closeForm === 'printer-form') { $('printer-form').reset(); resetPrinterFormMode(); setPrinterCatalogSelection(); } if (close.dataset.closeForm === 'order-form') { $('order-form').reset(); resetOrderPdfAnalysis(); } if (close.dataset.closeForm === 'quick-dispatch-form') resetQuickDispatchForm(); }
   const removeArea = event.target.closest('[data-remove-template-field]'); if (removeArea) { templateFields.splice(Number(removeArea.dataset.removeTemplateField), 1); renderTemplateFields(); }
   if (event.target.id === 'clear-template-fields') { templateFields = []; renderTemplateFields(); }
   const discovered = event.target.closest('[data-add-discovered]'); if (discovered) { try { const printer = JSON.parse(discovered.dataset.addDiscovered); const form = $('printer-form'); form.reset(); resetPrinterFormMode(); form.querySelector('[name="name"]').value = `${printer.detected_as} ${printer.ip}`; form.querySelector('[name="ip"]').value = printer.port && Number(printer.port) !== 7125 ? `${printer.ip}:${printer.port}` : printer.ip; form.querySelector('[name="type"]').value = printer.type; form.querySelector('[name="group_name"]').value = printer.detected_as; setPrinterCatalogSelection(); form.classList.remove('hidden'); $('printer-brand').focus(); toast('Dados preenchidos. Seleciona a marca e o modelo antes de confirmar.'); } catch { toast('Não foi possível preparar esta impressora.', 'error'); } }
@@ -733,6 +733,84 @@ function libraryFileOptions() {
 function libraryPartOptions() {
   return ['<option value="">Selecionar peça da biblioteca</option>', ...libraryParts.filter((part) => part.gcodes?.some((file) => file.active !== false)).map((part) => `<option value="${escape(part.id)}">${escape(part.name)} · ${part.gcodes.filter((file) => file.active !== false).length} G-code(s)</option>`)].join('');
 }
+let quickDispatchData = null;
+function quickDispatchFiles() { return libraryFiles.filter((file) => file.active !== false); }
+function quickDispatchFileOptions(selected = '') {
+  return ['<option value="">Selecionar G-code ou 3MF</option>', ...quickDispatchFiles().map((file) => {
+    const type = /\.3mf$/i.test(file.original_name || '') ? '3MF' : 'G-code';
+    const pieces = Number(file.metadata?.quantity) || 1;
+    return `<option value="${escape(file.id)}" ${file.id === selected ? 'selected' : ''}>${escape(file.original_name)} · ${type} · ${pieces} peça(s) · ${escape(file.printer_model || 'perfil em falta')}</option>`;
+  })].join('');
+}
+function quickDispatchSummaryMarkup(data) {
+  const box = $('quick-dispatch-summary'); if (!box) return;
+  if (!data) {
+    box.innerHTML = '<strong>Escolhe um G-code ou 3MF da Biblioteca.</strong><small>A compatibilidade é calculada pelo perfil de impressora, material e disponibilidade.</small>';
+    return;
+  }
+  const file = data.file || {}; const materials = Array.isArray(file.metadata?.materials) && file.metadata.materials.length ? file.metadata.materials : [{ material: file.metadata?.material, color: file.metadata?.color }];
+  const materialLabel = materials.filter((item) => item?.material || item?.color).map((item) => `${item.material || 'material'}${item.color ? ` ${item.color}` : ''}`).join(' · ') || 'material não indicado';
+  const candidates = data.compatible_printers || [];
+  if (!candidates.length) {
+    box.classList.add('warning');
+    box.innerHTML = `<strong>Não existe uma impressora compatível com o perfil ${escape(file.printer_model || 'deste ficheiro')}.</strong><small>Adiciona ou corrige o modelo/perfil da impressora e da variante na Biblioteca.</small>`;
+    return;
+  }
+  box.classList.toggle('warning', !data.suggested_printer_id);
+  const suggested = candidates.find((printer) => Number(printer.id) === Number(data.suggested_printer_id));
+  const rows = candidates.map((printer) => `<li class="${printer.material_ready ? 'ready' : 'needs-material'}"><span class="status ${statusClass(printer.status)}"></span><strong>${escape(printer.name)}</strong><small>${escape(printer.model)} · ${escape(printer.status || 'desconhecido')}${printer.material_ready ? ' · material pronto' : ` · falta ${escape((printer.material_missing || []).join(', ') || 'material')}`}</small></li>`).join('');
+  box.innerHTML = `<div><strong>${escape(file.name)}</strong><small>${escape(file.printer_model || 'Sem perfil')} · ${escape(materialLabel)}</small></div><div class="quick-dispatch-recommendation">${suggested ? `Sugestão automática: <b>${escape(suggested.name)}</b>` : 'Nenhuma impressora tem o material necessário carregado.'}</div><ul>${rows}</ul>`;
+}
+async function refreshQuickDispatchOptions({ preservePrinter = true } = {}) {
+  const fileInput = $('quick-dispatch-file'); const printerInput = $('quick-dispatch-printer'); const quantityInput = $('quick-dispatch-quantity');
+  if (!fileInput || !printerInput) return;
+  const selectedFile = fileInput.value;
+  if (!selectedFile) { quickDispatchData = null; printerInput.innerHTML = '<option value="">Escolhe primeiro um ficheiro</option>'; printerInput.disabled = true; quickDispatchSummaryMarkup(null); return; }
+  const previousPrinter = preservePrinter ? printerInput.value : '';
+  try {
+    quickDispatchData = await api(`/api/quick-dispatch/options?file_id=${encodeURIComponent(selectedFile)}`);
+    const file = quickDispatchData.file || {}; const pieces = Number(file.metadata?.quantity) || 1;
+    if (!quantityInput.dataset.userEdited) quantityInput.value = String(pieces);
+    const candidates = quickDispatchData.compatible_printers || [];
+    printerInput.innerHTML = ['<option value="">Selecionar impressora</option>', ...candidates.map((printer) => `<option value="${printer.id}">${escape(printer.name)} · ${escape(printer.model)} · ${escape(printer.status || 'desconhecido')}${printer.material_ready ? '' : ' · material por confirmar'}</option>`)].join('');
+    printerInput.disabled = !candidates.length;
+    if (previousPrinter && candidates.some((printer) => Number(printer.id) === Number(previousPrinter))) printerInput.value = previousPrinter;
+    else if (quickDispatchData.suggested_printer_id) printerInput.value = String(quickDispatchData.suggested_printer_id);
+    quickDispatchSummaryMarkup(quickDispatchData);
+  } catch (error) {
+    quickDispatchData = null; printerInput.innerHTML = '<option value="">Não foi possível carregar impressoras</option>'; printerInput.disabled = true;
+    const box = $('quick-dispatch-summary'); if (box) { box.classList.add('warning'); box.innerHTML = `<strong>${escape(error.message)}</strong><small>Confirma o ficheiro e as impressoras registadas.</small>`; }
+  }
+}
+function resetQuickDispatchForm() {
+  const form = $('quick-dispatch-form'); if (!form) return;
+  form.reset(); quickDispatchData = null;
+  const fileInput = $('quick-dispatch-file'); if (fileInput) fileInput.innerHTML = quickDispatchFileOptions();
+  const quantity = $('quick-dispatch-quantity'); if (quantity) { quantity.value = '1'; delete quantity.dataset.userEdited; }
+  const wrap = $('quick-dispatch-printer-wrap'); if (wrap) wrap.classList.add('hidden');
+  const printer = $('quick-dispatch-printer'); if (printer) { printer.disabled = true; printer.innerHTML = '<option value="">Escolhe primeiro um ficheiro</option>'; }
+  quickDispatchSummaryMarkup(null);
+}
+function setupQuickDispatch() {
+  const form = $('quick-dispatch-form'); if (!form) return;
+  const fileInput = $('quick-dispatch-file'); const mode = $('quick-dispatch-mode'); const printerWrap = $('quick-dispatch-printer-wrap'); const quantity = $('quick-dispatch-quantity');
+  fileInput.innerHTML = quickDispatchFileOptions();
+  fileInput.addEventListener('change', () => refreshQuickDispatchOptions({ preservePrinter: false }));
+  mode.addEventListener('change', () => printerWrap.classList.toggle('hidden', mode.value !== 'manual'));
+  quantity.addEventListener('input', () => { quantity.dataset.userEdited = 'true'; });
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(form).entries());
+    if (!values.file_id) return toast('Seleciona um G-code ou 3MF da Biblioteca.', 'error');
+    if (values.mode === 'manual' && !values.printer_id) return toast('Seleciona uma impressora compatível.', 'error');
+    const button = form.querySelector('button[type="submit"]'); const original = button.textContent; button.disabled = true; button.textContent = 'A enviar…';
+    try {
+      const result = await api('/api/quick-dispatch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+      toast(result.message || 'Trabalho rápido criado na fila.'); form.classList.add('hidden'); resetQuickDispatchForm(); await update();
+    } catch (error) { toast(error.message, 'error'); }
+    finally { button.disabled = false; button.textContent = original; }
+  });
+}
 function setupProjectWorkspace() {
   const projectPanel = $('project-list')?.closest('.table-panel');
   if (!projectPanel || $('project-workspace')) return;
@@ -797,7 +875,12 @@ renderProjectWorkspace = function renderProjectWorkspaceFromLibrary() {
 renderProduction = function renderProductionWithFarmProjects(projects, jobs) {
   $('jobs-count').textContent = `${jobs.length} total`;
   $('projects-count').textContent = `${projects.length} total`;
-  $('job-list').innerHTML = jobs.length ? jobs.slice(0, 12).map((job) => `<div class="data-row"><div><strong>${value(job.part_name || job.name, `Trabalho #${job.id}`)}</strong><small>${value(job.printer_name, 'Impressora não atribuída')}</small></div><span class="badge ${statusClass(job.status)}">${value(job.status)}</span></div>`).join('') : '<p class="empty">Ainda não existem trabalhos.</p>';
+  $('job-list').innerHTML = jobs.length ? jobs.slice(0, 12).map((job) => {
+    const detail = job.kind === 'quick'
+      ? `${value(job.printer_name, 'Impressora não atribuída')} · ${Number(job.requested_quantity) || 0} peça(s) · ${Number(job.executions) || 1} execução(ões)`
+      : value(job.printer_name, 'Impressora não atribuída');
+    return `<div class="data-row"><div><strong>${value(job.part_name || job.name, `Trabalho #${job.id}`)}</strong><small>${detail}</small></div><span class="badge ${statusClass(job.status)}">${value(job.status)}</span></div>`;
+  }).join('') : '<p class="empty">Ainda não existem trabalhos.</p>';
   $('project-list').innerHTML = projects.length ? projects.map((project, index) => `<div class="data-row project-row ${Number(project.id) === Number(selectedFarmProjectId) ? 'selected' : ''}"><div><strong>${value(project.name, `Projeto #${project.id}`)}</strong><small>${value(project.description, 'Sem descrição')}</small></div><div class="project-row-actions"><span class="badge ${statusClass(project.status)}">${projectStatusLabel(project.status)}</span><button class="compact secondary" data-move-project="${project.id}" data-move-direction="up" ${index === 0 ? 'disabled' : ''}>↑</button><button class="compact secondary" data-move-project="${project.id}" data-move-direction="down" ${index === projects.length - 1 ? 'disabled' : ''}>↓</button><button class="compact" data-open-project="${project.id}">Editar</button>${String(project.status || 'draft') === 'draft' ? `<button class="compact danger" data-delete-project="${escape(project.id)}" data-project-name="${escape(project.name || `Projeto #${project.id}`)}">Apagar</button>` : ''}</div></div>`).join('') : '<p class="empty">Ainda não existem projetos.</p>';
 };
 document.addEventListener('submit', async (event) => {
@@ -912,6 +995,7 @@ setupOverviewLayout();
 setupProjectWorkspace();
 setupPrinterWorkspace();
 setupPrinterCatalog();
+setupQuickDispatch();
 const initialProjectEditorId = projectEditorIdFromPath();
 const initialPrinterEditorId = printerEditorIdFromPath();
 const initialPrinterListPage = /^\/impressoras\/?$/.test(window.location.pathname);

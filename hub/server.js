@@ -1289,6 +1289,67 @@ function dispatchStatus(value, part, snapshots = []) {
   }
   return { dispatchable: true, reasons: [], notes: ready.map((printer) => `${printer.name}: material compatível em ${printer.material_profile?.label || 'bobine'}.`) };
 }
+// A file is compatible with a printer profile, never merely with a brand.  The
+// relaxed tail comparison deliberately accepts a library profile such as
+// "P1S" for a registered "Bambu Lab P1S", while still keeping e.g. an A1 out
+// of the P1S list.
+function printerModelKey(value) {
+  return clean(value, 120).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLocaleUpperCase('pt-PT').replace(/[^A-Z0-9]+/g, ' ').trim();
+}
+function unbrandedPrinterModelKey(value) {
+  return printerModelKey(value).replace(/^(?:ANYCUBIC|BAMBU LAB|CREALITY|ELEGOO|PRUSA|RATRIG|VORON|QIDI|SOVOL|FLASHFORGE)\s+/, '');
+}
+function printerSupportsProductionFile(printer, file) {
+  const fileModel = unbrandedPrinterModelKey(file?.printer_model);
+  const printerModel = unbrandedPrinterModelKey(printer?.model);
+  if (!fileModel || !printerModel) return false;
+  return fileModel === printerModel || fileModel.endsWith(` ${printerModel}`) || printerModel.endsWith(` ${fileModel}`);
+}
+function productionFileMaterialNeeds(file) {
+  const metadata = file?.metadata || {};
+  const entries = Array.isArray(metadata.materials) && metadata.materials.length
+    ? metadata.materials
+    : [{ material: metadata.material, color: metadata.color }];
+  const unique = new Map();
+  for (const entry of entries) {
+    const material = clean(entry?.material, 80); const color = clean(entry?.color || entry?.color_name, 80);
+    if (!material && !color) continue;
+    unique.set(`${normalizedMaterial(material)}|${normalizedColor(color)}`, { material, color });
+  }
+  return [...unique.values()];
+}
+function productionFileMaterialReadiness(value, printer, file) {
+  const profile = printer.material_profile || printerMaterialProfile(value, printer);
+  const needs = productionFileMaterialNeeds(file);
+  const missing = needs.filter((need) => !profile.slots.some((slot) => materialIsCompatible(slot, need.material, need.color)));
+  return { profile, needs, missing, ready: missing.length === 0 };
+}
+function printerCanReceiveWorkNow(printer) {
+  return ['IDLE', 'ONLINE', 'FINISHED'].includes(String(printer?.status || '').toUpperCase());
+}
+async function quickDispatchOptions(value, file) {
+  const snapshots = await managedPrinterSnapshots(value);
+  const candidates = snapshots.filter((printer) => printerSupportsProductionFile(printer, file)).map((printer) => {
+    const material = productionFileMaterialReadiness(value, printer, file);
+    return {
+      id: printer.id,
+      name: printer.name,
+      model: printer.model,
+      status: printer.status,
+      available_now: printerCanReceiveWorkNow(printer),
+      material_ready: material.ready,
+      material_missing: material.missing.map((need) => `${need.material || 'material'}${need.color ? ` ${need.color}` : ''}`),
+      material_system: material.profile.label,
+    };
+  }).sort((left, right) => Number(right.available_now && right.material_ready) - Number(left.available_now && left.material_ready)
+    || Number(right.material_ready) - Number(left.material_ready)
+    || String(left.name).localeCompare(String(right.name), 'pt-PT'));
+  const suggested = candidates.find((printer) => printer.available_now && printer.material_ready)
+    || candidates.find((printer) => printer.material_ready)
+    || null;
+  return { file: { id: file.id, name: file.original_name, printer_model: file.printer_model, metadata: file.metadata || {} }, compatible_printers: candidates, suggested_printer_id: suggested?.id || null };
+}
 function localSpool(item) {
   const initial = Number(item.initial_weight || 0); const used = Number(item.used_weight || 0);
   return { ...item, remaining_weight: Math.max(0, Number(item.remaining_weight ?? initial - used)), filament: { material: item.material || 'Material não definido', color_hex: item.color_hex || '#6f747a', vendor: { name: item.brand || 'Sem fabricante' } } };
@@ -1548,6 +1609,51 @@ app.delete('/api/library-parts/:id', (req, res) => {
 });
 
 app.get('/api/files', (_req, res) => res.json([...state().files].sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))));
+app.get('/api/quick-dispatch/options', async (req, res) => {
+  const saved = state(); const file = getLibraryFile(saved, clean(req.query?.file_id, 80));
+  if (!file || file.active === false) return res.status(404).json({ error: 'Seleciona um ficheiro ativo da Biblioteca.' });
+  res.json(await quickDispatchOptions(saved, file));
+});
+app.post('/api/quick-dispatch', async (req, res) => {
+  const saved = state(); const file = getLibraryFile(saved, clean(req.body?.file_id, 80));
+  if (!file || file.active === false) return res.status(404).json({ error: 'O ficheiro selecionado já não está disponível na Biblioteca.' });
+  if (!fs.existsSync(path.join(uploadsDir, file.stored_name))) return res.status(410).json({ error: 'O ficheiro físico já não existe na Biblioteca.' });
+  const requestedQuantity = Math.floor(Number(req.body?.requested_quantity));
+  if (!Number.isInteger(requestedQuantity) || requestedQuantity < 1) return res.status(400).json({ error: 'Indica uma quantidade válida para produzir.' });
+  const mode = clean(req.body?.mode, 20).toLowerCase() === 'manual' ? 'manual' : 'auto';
+  const options = await quickDispatchOptions(saved, file);
+  if (!options.compatible_printers.length) return res.status(409).json({ error: `Não existe uma impressora registada compatível com o perfil ${file.printer_model || 'deste ficheiro'}.` });
+  let selected = null;
+  if (mode === 'manual') {
+    const printerId = Number(req.body?.printer_id);
+    selected = options.compatible_printers.find((printer) => Number(printer.id) === printerId) || null;
+    if (!selected) return res.status(409).json({ error: 'A impressora selecionada não é compatível com este G-code/3MF.' });
+  } else {
+    selected = options.compatible_printers.find((printer) => printer.available_now && printer.material_ready)
+      || options.compatible_printers.find((printer) => printer.material_ready)
+      || null;
+    if (!selected) return res.status(409).json({ error: 'Nenhuma impressora compatível tem os materiais necessários carregados. Associa-os primeiro na página Impressoras ou escolhe uma impressora manualmente para deixar o trabalho em espera.' });
+  }
+  const piecesPerExecution = Math.max(1, Math.floor(Number(file.metadata?.quantity) || 1));
+  const executions = Math.ceil(requestedQuantity / piecesPerExecution);
+  const part = getLibraryPart(saved, file.part_id);
+  const status = selected.material_ready ? (selected.available_now ? 'QUEUED' : 'WAITING') : 'AWAITING_MATERIAL';
+  const now = new Date().toISOString();
+  const job = {
+    id: nextId(saved.jobs), kind: 'quick', name: `Rápido · ${part?.name || partNameFromFile(file)}`,
+    library_file_id: file.id, filename: file.original_name, printer_id: selected.id, printer_model: file.printer_model,
+    requested_quantity: requestedQuantity, pieces_per_execution: piecesPerExecution, executions,
+    produced_quantity: executions * piecesPerExecution, required_material: clean(file.metadata?.material, 80), required_color: clean(file.metadata?.color, 80),
+    status, dispatch_mode: mode, created_at: now, updated_at: now,
+  };
+  saved.jobs.unshift(job); save(saved);
+  const statusMessage = status === 'QUEUED'
+    ? `Trabalho rápido enviado para a fila de ${selected.name}.`
+    : status === 'WAITING'
+      ? `Trabalho rápido atribuído a ${selected.name}; ficará em espera até a impressora estar livre.`
+      : `Trabalho rápido atribuído a ${selected.name}; falta associar o material indicado.`;
+  res.status(201).json({ job, message: statusMessage });
+});
 app.post('/api/files', upload.single('gcode'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Seleciona um ficheiro G-code ou 3MF.' });
   const saved = state(); const part = getLibraryPart(saved, clean(req.body?.part_id, 80));
@@ -1578,8 +1684,9 @@ app.put('/api/files/:id', (req, res) => {
 });
 app.delete('/api/files/:id', (req, res) => {
   const current = state(); const target = getLibraryFile(current, req.params.id);
-  const referenced = current.orders.some((order) => orderLibraryFiles(order).some((entry) => entry.file_id === req.params.id) || order.library_parts?.some((entry) => entry.selected_file_id === req.params.id || (entry.part_id === target?.part_id && !entry.selected_file_id && libraryPartFiles(current, target.part_id, true).length <= 1)));
-  if (referenced) return res.status(409).json({ error: 'Este G-code está associado a uma encomenda. Remove primeiro a associação; o ficheiro permanece na biblioteca.' });
+  const referenced = current.orders.some((order) => orderLibraryFiles(order).some((entry) => entry.file_id === req.params.id) || order.library_parts?.some((entry) => entry.selected_file_id === req.params.id || (entry.part_id === target?.part_id && !entry.selected_file_id && libraryPartFiles(current, target.part_id, true).length <= 1)))
+    || current.jobs.some((job) => job.library_file_id === req.params.id && !['CANCELLED', 'FINISHED', 'COMPLETED'].includes(String(job.status || '').toUpperCase()));
+  if (referenced) return res.status(409).json({ error: 'Este ficheiro está associado a uma encomenda ou trabalho ativo. Remove ou conclui primeiro essa ligação; o ficheiro permanece na biblioteca.' });
   const saved = current; const file = target; if (!file) return res.status(404).json({ error: 'Ficheiro não encontrado.' });
   for (const name of [file.stored_name, file.thumbnail?.stored_name]) if (name) fs.rmSync(path.join(uploadsDir, name), { force: true });
   saved.files = saved.files.filter((item) => item.id !== file.id); save(saved); res.status(204).end();

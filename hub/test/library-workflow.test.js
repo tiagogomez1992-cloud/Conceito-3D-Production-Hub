@@ -198,3 +198,27 @@ test('impressora, bobine e projeto são guardados pelo próprio portal', async (
   assert.equal(display.body.resources.memory.total_mb > 0, true);
   assert.equal(Array.isArray(display.body.resources.disks), true);
 });
+
+test('produção rápida filtra impressoras pelo perfil do G-code e cria trabalho autónomo', async () => {
+  const part = await json('/api/library-parts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'envio rápido' }) });
+  assert.equal(part.response.status, 201);
+  const file = await json('/api/files', { method: 'POST', body: gcodeForm(part.body.id, 'envio-rapido.3mf.gcode', 3, 'Anycubic Kobra S1 Max', 'Preto') });
+  assert.equal(file.response.status, 201);
+
+  const options = await json(`/api/quick-dispatch/options?file_id=${encodeURIComponent(file.body.id)}`);
+  assert.equal(options.response.status, 200);
+  assert.equal(options.body.compatible_printers.length >= 2, true);
+  assert.equal(options.body.compatible_printers.every((printer) => /S1 MAX/i.test(printer.model)), true);
+
+  const summary = await json('/api/summary');
+  const bambu = summary.body.printers.items.find((printer) => printer.type === 'bambu');
+  const rejected = await json('/api/quick-dispatch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file_id: file.body.id, requested_quantity: 6, mode: 'manual', printer_id: bambu.id }) });
+  assert.equal(rejected.response.status, 409);
+
+  const queued = await json('/api/quick-dispatch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file_id: file.body.id, requested_quantity: 7, mode: 'manual', printer_id: options.body.compatible_printers[0].id }) });
+  assert.equal(queued.response.status, 201);
+  assert.equal(queued.body.job.kind, 'quick');
+  assert.equal(queued.body.job.executions, 3);
+  assert.equal(queued.body.job.produced_quantity, 9);
+  assert.equal(queued.body.job.library_file_id, file.body.id);
+});

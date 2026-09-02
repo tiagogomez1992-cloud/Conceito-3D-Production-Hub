@@ -40,6 +40,29 @@ header { display:flex; justify-content:space-between; align-items:center; paddin
 @media (max-width:700px) { .history-card { grid-template-columns:1fr; gap:10px; }.history-card>div:nth-child(2) { padding-left:0; border-left:0; } }
 @media (max-width:520px) { .shell { padding:20px 14px; }.hero,.panel { padding:22px; } header { padding-bottom:20px; }.live { display:none; } }
 
+/* Produção rápida: dispatch autónomo, sem projeto ou encomenda. */
+.quick-dispatch-form { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.quick-dispatch-intro { grid-column:1/-1; display:grid; gap:4px; padding:3px 1px 8px; }
+.quick-dispatch-intro .eyebrow { margin:0; }
+.quick-dispatch-intro strong { color:var(--p3-white,#f5f5f2); font-size:1rem; text-transform:uppercase; letter-spacing:.025em; }
+.quick-dispatch-intro small { color:#aeb8be; font-size:.76rem; line-height:1.4; }
+.quick-dispatch-summary { grid-column:1/-1; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px 18px; padding:13px; border:1px solid #1e5f94; border-left:3px solid var(--p3-blue,#008bff); border-radius:6px; background:#0c171e; }
+.quick-dispatch-summary>div:first-child { min-width:0; }
+.quick-dispatch-summary strong,.quick-dispatch-summary small { display:block; }
+.quick-dispatch-summary strong { overflow-wrap:anywhere; color:#edf3f6; font-size:.82rem; }
+.quick-dispatch-summary small { margin-top:4px; color:#aebbc8; font-size:.72rem; }
+.quick-dispatch-summary.warning { border-color:#945019; border-left-color:var(--p3-orange,#ff6a00); background:#1a130d; }
+.quick-dispatch-recommendation { align-self:start; color:#b7e4ff; font-size:.75rem; text-align:right; }
+.quick-dispatch-summary.warning .quick-dispatch-recommendation { color:#ffd29a; }
+.quick-dispatch-summary ul { grid-column:1/-1; display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:7px; margin:1px 0 0; padding:0; list-style:none; }
+.quick-dispatch-summary li { display:grid; grid-template-columns:10px minmax(0,1fr); column-gap:8px; align-items:start; padding:8px; border:1px solid #29404f; border-radius:5px; background:#0a1014; }
+.quick-dispatch-summary li .status { grid-row:span 2; margin-top:3px; }
+.quick-dispatch-summary li strong,.quick-dispatch-summary li small { grid-column:2; }
+.quick-dispatch-summary li small { margin-top:2px; overflow-wrap:anywhere; line-height:1.35; }
+.quick-dispatch-summary li.needs-material { border-color:#604a30; }
+.quick-dispatch-summary li.needs-material small { color:#e0b47e; }
+@media (max-width:700px) { .quick-dispatch-form { grid-template-columns:1fr; }.quick-dispatch-summary { grid-template-columns:1fr; }.quick-dispatch-recommendation { text-align:left; }.quick-dispatch-summary ul { grid-template-columns:1fr; } }
+
 /* Pro 3D World production console — applied over the existing functional UI. */
 :root { --p3-charcoal:#1a1a1a; --p3-black:#0a0c0e; --p3-panel:#111416; --p3-line:#34393e; --p3-blue:#008bff; --p3-orange:#ff6a00; --p3-white:#f5f5f2; --p3-muted:#9ea5aa; color-scheme:dark; }
 body { background:radial-gradient(ellipse at 88% -15%,#153a682e 0,transparent 35rem),linear-gradient(125deg,#090b0d 0%,#111416 54%,#0a0c0e 100%); color:var(--p3-white); }
