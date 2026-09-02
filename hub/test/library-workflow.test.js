@@ -221,6 +221,22 @@ test('impressora, bobine e projeto são guardados pelo próprio portal', async (
   assert.equal(Array.isArray(display.body.resources.disks), true);
 });
 
+test('stock aceita várias linhas numa única confirmação e acumula material igual', async () => {
+  const first = await json('/api/spools/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entries: [
+    { material: 'ASA', color: 'Preto', brand: 'Pro3DWorld', remaining_weight: 1000 },
+    { material: 'PLA', color: 'Branco', brand: 'Pro3DWorld', remaining_weight: 750 },
+    { material: 'ASA', color: 'Preto', brand: 'Pro3DWorld', remaining_weight: 500 },
+  ] }) });
+  assert.equal(first.response.status, 201);
+  assert.equal(first.body.total, 3);
+  assert.equal(first.body.added_weight, 2250);
+  assert.equal(first.body.created, 2);
+  assert.equal(first.body.merged, 1);
+  const summary = await json('/api/summary');
+  const asa = summary.body.spools.stock.find((entry) => entry.material === 'ASA' && entry.color_name === 'Preto');
+  assert.equal(asa.remaining_weight, 1500);
+});
+
 test('produção rápida filtra impressoras pelo perfil do G-code e cria trabalho autónomo', async () => {
   const part = await json('/api/library-parts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'envio rápido' }) });
   assert.equal(part.response.status, 201);

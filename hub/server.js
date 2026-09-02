@@ -2294,21 +2294,50 @@ app.post('/api/projects/:projectId/parts/:partId/library-gcode', async (req, res
   res.status(201).json(result.data);
 });
 app.post('/api/scheduler/dispatch', async (_req, res) => forwarded(res, await safeRequest('post', `${internalProductionUrl}/api/scheduler/dispatch`, {}), 200));
-app.post('/api/spools', (req, res) => {
-  const material = clean(req.body?.material, 80); const color = clean(req.body?.color, 80);
-  const weight = Math.max(1, Number(req.body?.remaining_weight || req.body?.initial_weight || 1000));
-  if (!material || !color) return res.status(400).json({ error: 'Indica o material e a cor do stock.' });
-  const saved = state(); const now = new Date().toISOString();
-  const brand = clean(req.body?.brand, 80);
-  const existing = saved.spools.find((item) => normalizedMaterial(item.material) === normalizedMaterial(material) && normalizedColor(item.color_name || item.color) === normalizedColor(color) && clean(item.brand, 80).toLowerCase() === brand.toLowerCase());
+function stockEntry(payload, position = null) {
+  const material = clean(payload?.material, 80);
+  const color = clean(payload?.color, 80);
+  const weight = Number(payload?.remaining_weight ?? payload?.initial_weight);
+  const reference = position === null ? '' : ` na linha ${position + 1}`;
+  if (!material || !color) throw new Error(`Indica o material e a cor do stock${reference}.`);
+  if (!Number.isFinite(weight) || weight <= 0) throw new Error(`Indica uma quantidade válida em gramas${reference}.`);
+  return { material, color, weight, brand: clean(payload?.brand, 80), color_hex: clean(payload?.color_hex, 16) || '#6f747a' };
+}
+function addStock(saved, entry, now) {
+  const existing = saved.spools.find((item) => normalizedMaterial(item.material) === normalizedMaterial(entry.material) && normalizedColor(item.color_name || item.color) === normalizedColor(entry.color) && clean(item.brand, 80).toLowerCase() === entry.brand.toLowerCase());
   if (existing) {
-    existing.initial_weight = Number(existing.initial_weight || 0) + weight;
-    existing.remaining_weight = Number(existing.remaining_weight || 0) + weight;
-    existing.inventory_mode = 'stock'; existing.updated_at = now; save(saved);
-    return res.json({ ...localSpool(existing), merged: true, added_weight: weight });
+    existing.initial_weight = Number(existing.initial_weight || 0) + entry.weight;
+    existing.remaining_weight = Number(existing.remaining_weight || 0) + entry.weight;
+    existing.inventory_mode = 'stock'; existing.updated_at = now;
+    return { spool: localSpool(existing), merged: true, added_weight: entry.weight };
   }
-  const spool = { id: nextId(saved.spools), material, color_name: color, color_hex: clean(req.body?.color_hex, 16) || '#6f747a', brand, inventory_mode: 'stock', initial_weight: weight, used_weight: 0, remaining_weight: weight, created_at: now, updated_at: now };
-  saved.spools.push(spool); save(saved); res.status(201).json({ ...localSpool(spool), merged: false, added_weight: weight });
+  const spool = { id: nextId(saved.spools), material: entry.material, color_name: entry.color, color_hex: entry.color_hex, brand: entry.brand, inventory_mode: 'stock', initial_weight: entry.weight, used_weight: 0, remaining_weight: entry.weight, created_at: now, updated_at: now };
+  saved.spools.push(spool);
+  return { spool: localSpool(spool), merged: false, added_weight: entry.weight };
+}
+app.post('/api/spools', (req, res) => {
+  try {
+    const saved = state(); const result = addStock(saved, stockEntry(req.body), new Date().toISOString()); save(saved);
+    res.status(result.merged ? 200 : 201).json({ ...result.spool, merged: result.merged, added_weight: result.added_weight });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.post('/api/spools/bulk', (req, res) => {
+  const rawEntries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+  if (!rawEntries.length) return res.status(400).json({ error: 'Adiciona pelo menos uma linha de stock.' });
+  if (rawEntries.length > 50) return res.status(400).json({ error: 'Podes adicionar até 50 linhas de stock de cada vez.' });
+  try {
+    const entries = rawEntries.map((entry, index) => stockEntry(entry, index));
+    const saved = state(); const now = new Date().toISOString();
+    const records = entries.map((entry) => addStock(saved, entry, now));
+    save(saved);
+    res.status(201).json({
+      total: records.length,
+      added_weight: records.reduce((sum, record) => sum + record.added_weight, 0),
+      created: records.filter((record) => !record.merged).length,
+      merged: records.filter((record) => record.merged).length,
+      records: records.map((record) => ({ ...record.spool, merged: record.merged, added_weight: record.added_weight })),
+    });
+  } catch (error) { res.status(400).json({ error: error.message }); }
 });
 app.get('/api/filaments', (_req, res) => res.json(localFilamentCatalog));
 app.post('/api/assignments', (req, res) => { const { printer_id, spool_id } = req.body || {}; if (!printer_id || !spool_id) return res.status(400).json({ error: 'Impressora e bobine são obrigatórias.' }); const saved = state(); saved.assignments[String(printer_id)] = { spool_id: Number(spool_id), assigned_at: new Date().toISOString() }; save(saved); res.status(201).json(saved.assignments[String(printer_id)]); });
