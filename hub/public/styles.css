@@ -1070,6 +1070,9 @@ body.printer-editor-page .printer-workspace { margin-top:7px; }
 .library-gcode-title strong,.library-gcode-title small { display:block; }
 .library-gcode-title strong { overflow-wrap:anywhere; font-size:.88rem; }
 .library-gcode-title small { margin-top:4px; color:#90999f; font-size:.7rem; }
+.library-gcode-title .production-materials { display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; }
+.production-materials span { display:inline-flex; align-items:center; gap:5px; padding:3px 6px; border:1px solid #31414b; border-radius:99px; color:#b9d9f4; background:#0b1820; font-size:.64rem; }
+.production-file-warning { max-width:620px; color:#efb66b!important; line-height:1.35; }
 .gcode-edit-form,.part-upload-form { display:grid; gap:9px; align-items:end; }
 .gcode-edit-form { grid-template-columns:repeat(6,minmax(105px,1fr)) auto; }
 .part-upload-form { grid-template-columns:minmax(180px,1.45fr) repeat(5,minmax(105px,.8fr)) auto; padding:14px; border:1px dashed #3a4851; border-radius:6px; background:#0d1215; }

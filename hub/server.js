@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const multer = require('multer');
 const net = require('net');
 const http = require('http');
+const zlib = require('zlib');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 
@@ -189,8 +190,8 @@ const upload = multer({
   }),
   limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (_req, file, done) => {
-    const accepted = ['.gcode', '.gco'].includes(path.extname(file.originalname).toLowerCase());
-    done(accepted ? null : new Error('Apenas são aceites ficheiros G-code (.gcode ou .gco).'), accepted);
+    const accepted = ['.gcode', '.gco', '.3mf'].includes(path.extname(file.originalname).toLowerCase());
+    done(accepted ? null : new Error('Apenas são aceites ficheiros G-code (.gcode, .gco) ou projetos 3MF (.3mf).'), accepted);
   },
 });
 
@@ -203,16 +204,152 @@ const pdfUpload = multer({
   },
 });
 
+function hexColor(value) {
+  const raw = clean(value, 20).replace(/^#/, '').toUpperCase();
+  if (/^[0-9A-F]{8}$/.test(raw)) return `#${raw.slice(0, 6)}`;
+  return /^[0-9A-F]{6}$/.test(raw) ? `#${raw}` : '';
+}
+function materialEntries(entries) {
+  const unique = new Set();
+  return entries.map((entry, index) => {
+    const material = clean(entry?.material, 80);
+    const color = clean(entry?.color, 80);
+    const color_hex = hexColor(entry?.color_hex || color);
+    if (!material && !color && !color_hex) return null;
+    const key = `${material.toLowerCase()}|${color.toLowerCase()}|${color_hex}`;
+    if (unique.has(key)) return null;
+    unique.add(key);
+    return { slot: index + 1, material, color: color_hex || color, color_hex: color_hex || null };
+  }).filter(Boolean);
+}
+function metadataResult({ quantity, material, color, nozzle, filament, materials = [], source = 'gcode', warnings = [] }) {
+  const normalizedMaterials = materialEntries(materials.length ? materials : [{ material, color }]);
+  const primary = normalizedMaterials[0] || { material: clean(material, 80), color: clean(color, 80), color_hex: hexColor(color) || null };
+  const missing = [];
+  if (!quantity) missing.push('quantidade de peças');
+  if (!primary.material) missing.push('tipo de material');
+  if (!nozzle) missing.push('tamanho do bico');
+  if (!primary.color) missing.push('cor');
+  return {
+    quantity: quantity || null,
+    material: primary.material || null,
+    color: primary.color || null,
+    nozzle: nozzle || null,
+    filament_grams: filament || null,
+    materials: normalizedMaterials,
+    source,
+    warnings: [...new Set(warnings.filter(Boolean))],
+    valid: !missing.length,
+    missing,
+  };
+}
 function gcodeMetadata(contents, supplied = {}) {
   const find = (patterns) => patterns.map((pattern) => contents.match(pattern)?.[1]?.trim()).find(Boolean) || null;
   const quantity = number(supplied.quantity) || number(find([/(?:quantidade|quantity|copies|pieces|peças|objects?)\s*[:=]\s*(\d+)/im]));
   const material = clean(supplied.material || find([/(?:filament[_ ]?(?:type|material)|material|tipo de filamento)\s*[:=]\s*([^\r\n;]+)/im]), 80) || null;
-  const color = clean(supplied.color || find([/(?:filament[_ ]?color|cor(?: do filamento)?)\s*[:=]\s*([^\r\n;]+)/im]), 80) || null;
+  const color = clean(supplied.color || find([/(?:filament[_ ]?colou?r|cor(?: do filamento)?)\s*[:=]\s*([^\r\n;]+)/im]), 80) || null;
   const nozzle = number(supplied.nozzle) || number(find([/(?:nozzle[_ ]?(?:diameter|size)?|bico(?:[_ ]?(?:diameter|size))?)\s*[:=]\s*([0-9]+(?:[\.,][0-9]+)?)/im]));
   const filament = number(find([/(?:total filament used \[g\]|filament used \[g\]|filament_weight_total)\s*[:=]\s*([0-9]+(?:[\.,][0-9]+)?)/im]));
-  const missing = []; if (!quantity) missing.push('quantidade de peças'); if (!material) missing.push('tipo de material'); if (!nozzle) missing.push('tamanho do bico');
-  if (!color) missing.push('cor');
-  return { quantity, material, color, nozzle, filament_grams: filament, valid: !missing.length, missing };
+  return metadataResult({ quantity, material, color, nozzle, filament, source: 'gcode' });
+}
+
+function zipEntries(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 22) throw new Error('O ficheiro não é um arquivo 3MF válido.');
+  const endSignature = 0x06054b50;
+  let end = -1;
+  for (let position = Math.max(0, buffer.length - 65557); position <= buffer.length - 22; position += 1) {
+    if (buffer.readUInt32LE(position) === endSignature) end = position;
+  }
+  if (end < 0) throw new Error('Não foi encontrado o índice ZIP do ficheiro 3MF.');
+  const count = buffer.readUInt16LE(end + 10);
+  const centralOffset = buffer.readUInt32LE(end + 16);
+  if (count > 500 || centralOffset >= buffer.length) throw new Error('O arquivo 3MF excede os limites suportados.');
+  const entries = new Map(); let cursor = centralOffset; let total = 0;
+  for (let index = 0; index < count; index += 1) {
+    if (cursor + 46 > buffer.length || buffer.readUInt32LE(cursor) !== 0x02014b50) throw new Error('Índice ZIP do 3MF inválido.');
+    const flags = buffer.readUInt16LE(cursor + 8);
+    const compression = buffer.readUInt16LE(cursor + 10);
+    const compressedSize = buffer.readUInt32LE(cursor + 20);
+    const uncompressedSize = buffer.readUInt32LE(cursor + 24);
+    const nameLength = buffer.readUInt16LE(cursor + 28);
+    const extraLength = buffer.readUInt16LE(cursor + 30);
+    const commentLength = buffer.readUInt16LE(cursor + 32);
+    const localOffset = buffer.readUInt32LE(cursor + 42);
+    const entryEnd = cursor + 46 + nameLength + extraLength + commentLength;
+    if (entryEnd > buffer.length || localOffset + 30 > buffer.length) throw new Error('Entrada ZIP do 3MF inválida.');
+    const name = buffer.subarray(cursor + 46, cursor + 46 + nameLength).toString(flags & 0x800 ? 'utf8' : 'utf8').replace(/\\/g, '/');
+    if (uncompressedSize > 8 * 1024 * 1024 || total + uncompressedSize > 24 * 1024 * 1024) throw new Error('O conteúdo do 3MF é demasiado grande para leitura segura.');
+    if (buffer.readUInt32LE(localOffset) !== 0x04034b50) throw new Error('Cabeçalho ZIP do 3MF inválido.');
+    const localNameLength = buffer.readUInt16LE(localOffset + 26);
+    const localExtraLength = buffer.readUInt16LE(localOffset + 28);
+    const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+    const dataEnd = dataStart + compressedSize;
+    if (dataEnd > buffer.length) throw new Error('Dados ZIP do 3MF inválidos.');
+    let value;
+    if (compression === 0) value = buffer.subarray(dataStart, dataEnd);
+    else if (compression === 8) value = zlib.inflateRawSync(buffer.subarray(dataStart, dataEnd));
+    else { cursor = entryEnd; continue; }
+    if (value.length !== uncompressedSize || value.length > 8 * 1024 * 1024) throw new Error('Entrada 3MF inválida ou demasiado grande.');
+    entries.set(name.toLowerCase(), { name, data: value }); total += value.length; cursor = entryEnd;
+  }
+  return entries;
+}
+function zipText(entries, pattern) {
+  const entry = [...entries.values()].find((candidate) => pattern.test(candidate.name));
+  return entry ? entry.data.toString('utf8') : '';
+}
+function jsonArraySetting(text, key) {
+  const match = String(text || '').match(new RegExp(`"${key}"\\s*:\\s*\\[([\\s\\S]*?)\\]`, 'i'));
+  if (!match) return [];
+  return [...match[1].matchAll(/"((?:\\.|[^"\\])*)"/g)].map((item) => item[1].replace(/\\"/g, '"').trim()).filter(Boolean);
+}
+function xmlMaterialEntries(model) {
+  return [...String(model || '').matchAll(/<base\b([^>]*)\/?>(?:<\/base>)?/gi)].map((match) => {
+    const attrs = match[1] || '';
+    const attribute = (name) => attrs.match(new RegExp(`${name}\\s*=\\s*["']([^"']*)["']`, 'i'))?.[1] || '';
+    return { material: attribute('name'), color: attribute('displaycolor'), color_hex: attribute('displaycolor') };
+  });
+}
+function metadataFrom3mf(buffer, supplied = {}) {
+  const entries = zipEntries(buffer);
+  const projectSettings = zipText(entries, /(?:^|\/)metadata\/(?:project_settings|model_settings|slice_info)\.(?:config|json)$/i);
+  const model = zipText(entries, /(?:^|\/)3d\/3dmodel\.model$/i);
+  const plateGcodes = [...entries.values()].filter((entry) => /(?:^|\/)metadata\/.*\.gcode$/i.test(entry.name));
+  const gcodeText = plateGcodes.map((entry) => entry.data.toString('utf8')).join('\n').slice(0, 4 * 1024 * 1024);
+  const fromGcode = gcodeMetadata(gcodeText, supplied);
+  const materialTypes = jsonArraySetting(projectSettings, 'filament_type');
+  const colors = jsonArraySetting(projectSettings, 'filament_colour').concat(jsonArraySetting(projectSettings, 'filament_color'));
+  const profileMaterials = materialTypes.map((material, index) => ({ material, color: colors[index] || '', color_hex: colors[index] || '' }));
+  const modelMaterials = xmlMaterialEntries(model);
+  let materials = materialEntries(profileMaterials.length ? profileMaterials : (modelMaterials.length ? modelMaterials : fromGcode.materials));
+  if (clean(supplied.material, 80) || clean(supplied.color, 80)) {
+    const first = materials[0] || {};
+    materials = materialEntries([{ ...first, material: clean(supplied.material, 80) || first.material, color: clean(supplied.color, 80) || first.color, color_hex: clean(supplied.color, 80) || first.color_hex }, ...materials.slice(1)]);
+  }
+  const nozzleValues = jsonArraySetting(projectSettings, 'nozzle_diameter');
+  const nozzle = number(supplied.nozzle) || fromGcode.nozzle || number(nozzleValues[0]);
+  const itemCount = [...String(model || '').matchAll(/<item\b[^>]*\bobjectid\s*=\s*["'][^"']+["'][^>]*\/?>(?:<\/item>)?/gi)].length;
+  const quantity = number(supplied.quantity) || fromGcode.quantity || itemCount || null;
+  const primary = materials[0] || { material: fromGcode.material, color: fromGcode.color };
+  const warnings = [];
+  if (!plateGcodes.length) warnings.push('O 3MF não inclui G-code de placa; foram usados os metadados do projeto.');
+  if (!materials.length) warnings.push('Não foram encontrados materiais no projeto 3MF.');
+  return metadataResult({
+    quantity,
+    material: clean(supplied.material || primary.material, 80),
+    color: clean(supplied.color || primary.color, 80),
+    nozzle,
+    filament: fromGcode.filament_grams,
+    materials: materials.length ? materials : [{ material: supplied.material, color: supplied.color }],
+    source: '3mf',
+    warnings,
+  });
+}
+function productionFileMetadata(filePath, originalName, supplied = {}) {
+  const file = fs.readFileSync(filePath);
+  return path.extname(originalName).toLowerCase() === '.3mf'
+    ? metadataFrom3mf(file, supplied)
+    : gcodeMetadata(file.toString('utf8').slice(0, 4 * 1024 * 1024), supplied);
 }
 
 function svgThumbnail(name, metadata) {
@@ -249,6 +386,20 @@ function pdfItemDescription(value) {
     .replace(/\b(?:qtd\.?|qty\.?|quantidade|quantity|un(?:id(?:ades?)?)?|pcs?|pieces?|pe[cç]as?)\b\s*[:=x]?\s*\d{1,5}\b/ig, '')
     .replace(/^[\s|;:–—-]+|[\s|;:–—-]+$/g, '')
     .replace(/\s+/g, ' '), 160);
+}
+function productionThumbnail(filePath, originalName, fileId, metadata) {
+  if (path.extname(originalName).toLowerCase() !== '.3mf') return gcodeThumbnail(fs.readFileSync(filePath, 'utf8').slice(0, 4 * 1024 * 1024), fileId, originalName, metadata);
+  try {
+    const entries = zipEntries(fs.readFileSync(filePath));
+    const images = [...entries.values()].filter((entry) => /(?:thumbnail|plate[_-]?\d+).*(?:\.png|\.jpe?g)$/i.test(entry.name));
+    const selected = images.sort((left, right) => right.data.length - left.data.length)[0];
+    if (!selected || selected.data.length < 100) throw new Error('missing image');
+    const isPng = selected.data.subarray(1, 4).equals(Buffer.from('PNG')); const isJpeg = selected.data.subarray(0, 2).equals(Buffer.from([0xff, 0xd8]));
+    if (!isPng && !isJpeg) throw new Error('invalid image');
+    const extension = isJpeg ? '.jpg' : '.png'; const storedName = `thumbnail-${fileId}${extension}`;
+    fs.writeFileSync(path.join(uploadsDir, storedName), selected.data);
+    return { url: `/uploads/${storedName}`, embedded: true, stored_name: storedName };
+  } catch { return { url: svgThumbnail(originalName, metadata), embedded: false, stored_name: null }; }
 }
 
 function pdfItems(text) {
@@ -1398,16 +1549,20 @@ app.delete('/api/library-parts/:id', (req, res) => {
 
 app.get('/api/files', (_req, res) => res.json([...state().files].sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))));
 app.post('/api/files', upload.single('gcode'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'Seleciona um ficheiro G-code.' });
+  if (!req.file) return res.status(400).json({ error: 'Seleciona um ficheiro G-code ou 3MF.' });
   const saved = state(); const part = getLibraryPart(saved, clean(req.body?.part_id, 80));
   const printerModel = clean(req.body?.printer_model, 100);
   if (!part || !printerModel) { fs.rmSync(req.file.path, { force: true }); return res.status(400).json({ error: 'Seleciona uma peça e indica a impressora ou perfil compatível.' }); }
-  const contents = fs.readFileSync(req.file.path, 'utf8').slice(0, 4 * 1024 * 1024);
-  const metadata = gcodeMetadata(contents, req.body || {});
-  if (!metadata.valid) { fs.rmSync(req.file.path, { force: true }); return res.status(400).json({ error: `Preenche os campos obrigatórios: ${metadata.missing.join(', ')}.` }); }
-  const id = crypto.randomUUID(); const thumbnail = gcodeThumbnail(contents, id, req.file.originalname, metadata);
-  const item = { id, part_id: part.id, original_name: clean(req.file.originalname, 255), stored_name: req.file.filename, size_bytes: req.file.size, printer_model: printerModel, active: true, metadata, thumbnail, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
-  saved.files.unshift(item); save(saved); res.status(201).json(item);
+  try {
+    const metadata = productionFileMetadata(req.file.path, req.file.originalname, req.body || {});
+    if (!metadata.valid) { fs.rmSync(req.file.path, { force: true }); return res.status(400).json({ error: `Preenche os campos obrigatórios: ${metadata.missing.join(', ')}.` }); }
+    const id = crypto.randomUUID(); const thumbnail = productionThumbnail(req.file.path, req.file.originalname, id, metadata);
+    const item = { id, part_id: part.id, original_name: clean(req.file.originalname, 255), stored_name: req.file.filename, size_bytes: req.file.size, printer_model: printerModel, active: true, metadata, thumbnail, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+    saved.files.unshift(item); save(saved); res.status(201).json(item);
+  } catch (error) {
+    fs.rmSync(req.file.path, { force: true });
+    res.status(422).json({ error: `Não foi possível ler o ficheiro ${path.extname(req.file.originalname).toLowerCase() === '.3mf' ? '3MF' : 'de produção'}: ${error.message || 'erro desconhecido'}` });
+  }
 });
 app.put('/api/files/:id', (req, res) => {
   const saved = state(); const file = getLibraryFile(saved, req.params.id);
@@ -1416,6 +1571,8 @@ app.put('/api/files/:id', (req, res) => {
   const metadata = gcodeMetadata('', req.body || {});
   if (!printerModel || !metadata.valid) return res.status(400).json({ error: `Preenche a impressora e os campos técnicos obrigatórios${metadata.missing.length ? `: ${metadata.missing.join(', ')}` : '.'}` });
   metadata.filament_grams = number(req.body?.filament_grams) || file.metadata?.filament_grams || null;
+  metadata.source = file.metadata?.source || metadata.source;
+  metadata.materials = Array.isArray(file.metadata?.materials) && file.metadata.materials.length ? file.metadata.materials : metadata.materials;
   file.printer_model = printerModel; file.metadata = metadata; file.active = req.body?.active !== false && String(req.body?.active) !== 'false'; file.updated_at = new Date().toISOString();
   save(saved); res.json(file);
 });
@@ -1668,11 +1825,16 @@ app.delete('/api/orders/:id/library-parts/:partId', (req, res) => {
 });
 app.post('/api/orders/:id/files', upload.single('gcode'), (req, res) => {
   const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });
-  if (!req.file) return res.status(400).json({ error: 'Seleciona um ficheiro G-code.' });
-  const metadata = gcodeMetadata(fs.readFileSync(req.file.path, 'utf8').slice(0, 1024 * 1024), req.body || {});
-  if (!metadata.valid) { fs.rmSync(req.file.path, { force: true }); return res.status(400).json({ error: `Preenche os campos obrigatórios: ${metadata.missing.join(', ')}.` }); }
-  const file = { id: crypto.randomUUID(), original_name: clean(req.file.originalname, 255), stored_name: req.file.filename, size_bytes: req.file.size, uploaded_at: new Date().toISOString(), metadata };
-  item.files.push(file); item.updated_at = new Date().toISOString(); save(saved); res.status(201).json(file);
+  if (!req.file) return res.status(400).json({ error: 'Seleciona um ficheiro G-code ou 3MF.' });
+  try {
+    const metadata = productionFileMetadata(req.file.path, req.file.originalname, req.body || {});
+    if (!metadata.valid) { fs.rmSync(req.file.path, { force: true }); return res.status(400).json({ error: `Preenche os campos obrigatórios: ${metadata.missing.join(', ')}.` }); }
+    const file = { id: crypto.randomUUID(), original_name: clean(req.file.originalname, 255), stored_name: req.file.filename, size_bytes: req.file.size, uploaded_at: new Date().toISOString(), metadata };
+    item.files.push(file); item.updated_at = new Date().toISOString(); save(saved); res.status(201).json(file);
+  } catch (error) {
+    fs.rmSync(req.file.path, { force: true });
+    res.status(422).json({ error: `Não foi possível ler o ficheiro 3MF: ${error.message || 'erro desconhecido'}` });
+  }
 });
 app.post('/api/orders/:id/complete', async (req, res) => {
   const saved = state(); const item = getOrder(saved, req.params.id); if (!item) return res.status(404).json({ error: 'Encomenda não encontrada.' });

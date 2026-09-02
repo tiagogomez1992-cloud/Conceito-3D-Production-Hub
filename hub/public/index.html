@@ -19,7 +19,7 @@
     <div id="order-board" class="order-board"><p class="empty">A carregar encomendas…</p></div>
   </section>
 
-  <section class="view" id="files"><div class="section-heading"><div><p class="eyebrow">BIBLIOTECA</p><h1>Peças e G-codes</h1><p>Cada peça pode ter várias variantes de produção por impressora, material, cor e bico.</p></div><button class="primary-link" data-open-form="library-part-form">Nova peça</button></div>
+  <section class="view" id="files"><div class="section-heading"><div><p class="eyebrow">BIBLIOTECA</p><h1>Peças e ficheiros de produção</h1><p>Cada peça pode ter variantes G-code ou 3MF por impressora, material, cor e bico.</p></div><button class="primary-link" data-open-form="library-part-form">Nova peça</button></div>
     <form class="inline-form hidden" id="library-part-form"><label>Nome da peça<input name="name" required maxlength="120" autocapitalize="characters" placeholder="Ex.: SUPORTE DE PAREDE"><small>O nome será guardado automaticamente em maiúsculas.</small></label><label class="wide">Descrição<input name="description" maxlength="500" placeholder="Referência interna ou notas opcionais"></label><button type="submit">Criar peça</button><button type="button" class="secondary" data-close-form="library-part-form">Cancelar</button></form>
     <div id="file-grid" class="library-part-grid"><p class="empty">A carregar biblioteca…</p></div>
   </section>

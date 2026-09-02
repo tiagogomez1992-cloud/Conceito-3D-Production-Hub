@@ -35,6 +35,29 @@ function gcodeForm(partId, filename, quantity, printerModel, color) {
   form.append('gcode', new Blob([`; generated test\n; filament used [g] = 12\nG28\n`], { type: 'text/plain' }), filename);
   return form;
 }
+function storedZip(entries) {
+  const localEntries = []; const centralEntries = []; let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, 'utf8'); const data = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(entry.data, 'utf8');
+    const local = Buffer.alloc(30); local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x800, 6); local.writeUInt16LE(0, 8); local.writeUInt32LE(data.length, 18); local.writeUInt32LE(data.length, 22); local.writeUInt16LE(name.length, 26);
+    localEntries.push(local, name, data);
+    const central = Buffer.alloc(46); central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(0x800, 8); central.writeUInt16LE(0, 10); central.writeUInt32LE(data.length, 20); central.writeUInt32LE(data.length, 24); central.writeUInt16LE(name.length, 28); central.writeUInt32LE(offset, 42);
+    centralEntries.push(central, name); offset += local.length + name.length + data.length;
+  }
+  const centralSize = centralEntries.reduce((size, entry) => size + entry.length, 0); const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10); end.writeUInt32LE(centralSize, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...localEntries, ...centralEntries, end]);
+}
+function threeMfForm(partId) {
+  const form = new FormData();
+  form.append('part_id', partId); form.append('printer_model', 'Bambu Lab A1');
+  form.append('gcode', new Blob([storedZip([
+    { name: '3D/3dmodel.model', data: '<model><resources><basematerials id="1"><base name="PETG" displaycolor="#FF6A00"/><base name="PLA" displaycolor="#008BFF"/></basematerials></resources><build><item objectid="1"/><item objectid="2"/></build></model>' },
+    { name: 'Metadata/project_settings.config', data: '{"filament_type":["PETG","PLA"],"filament_colour":["#FF6A00","#008BFF"],"nozzle_diameter":["0.6"]}' },
+    { name: 'Metadata/plate_1.gcode', data: '; total filament used [g] = 62.5\n; filament_type = PETG\n; filament_colour = #FF6A00\n; nozzle_diameter = 0.6\n' },
+  ])], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' }), 'suporte-ams.3mf');
+  return form;
+}
 
 test.before(async () => {
   dataDir = fs.mkdtempSync(path.join(process.cwd(), '.test-data-'));
@@ -106,6 +129,20 @@ test('peça agrega variantes e a encomenda escolhe um G-code', async () => {
 
   const protectedFile = await json(`/api/files/${second.body.id}`, { method: 'DELETE' });
   assert.equal(protectedFile.response.status, 409);
+});
+
+test('3MF extrai materiais, cores, bico e quantidade de peças do projeto', async () => {
+  const part = await json('/api/library-parts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'suporte AMS' }) });
+  assert.equal(part.response.status, 201);
+  const imported = await json('/api/files', { method: 'POST', body: threeMfForm(part.body.id) });
+  assert.equal(imported.response.status, 201);
+  assert.equal(imported.body.original_name, 'suporte-ams.3mf');
+  assert.equal(imported.body.metadata.source, '3mf');
+  assert.equal(imported.body.metadata.valid, true);
+  assert.equal(imported.body.metadata.quantity, 2);
+  assert.equal(imported.body.metadata.nozzle, 0.6);
+  assert.equal(imported.body.metadata.filament_grams, 62.5);
+  assert.deepEqual(imported.body.metadata.materials.map((entry) => [entry.material, entry.color_hex]), [['PETG', '#FF6A00'], ['PLA', '#008BFF']]);
 });
 
 test('impressora, bobine e projeto são guardados pelo próprio portal', async () => {
