@@ -1369,8 +1369,9 @@ function materialStock(items) {
     const material = clean(spool.material || spool.filament?.material, 80) || 'Material não definido';
     const color = clean(spool.color_name || spool.color || '', 80) || 'Sem cor';
     const brand = clean(spool.brand || spool.filament?.vendor?.name || '', 80);
-    const key = `${normalizedMaterial(material)}|${normalizedColor(color)}|${brand.toLowerCase()}`;
-    const group = groups.get(key) || { id: `stock:${key}`, material, color_name: color, color_hex: spool.color_hex || spool.filament?.color_hex || '#6f747a', brand, remaining_weight: 0, initial_weight: 0, spool_count: 0, source_count: 0, spool_ids: [], filament: { material, color_hex: spool.color_hex || spool.filament?.color_hex || '#6f747a', vendor: { name: brand || 'Sem fabricante' } } };
+    const unitWeight = Math.max(0, Number(spool.unit_weight || 0));
+    const key = `${normalizedMaterial(material)}|${normalizedColor(color)}|${brand.toLowerCase()}|${unitWeight}`;
+    const group = groups.get(key) || { id: `stock:${key}`, material, color_name: color, color_hex: spool.color_hex || spool.filament?.color_hex || '#6f747a', brand, unit_weight: unitWeight || null, remaining_weight: 0, initial_weight: 0, spool_count: 0, source_count: 0, spool_ids: [], filament: { material, color_hex: spool.color_hex || spool.filament?.color_hex || '#6f747a', vendor: { name: brand || 'Sem fabricante' } } };
     group.remaining_weight += Math.max(0, Number(spool.remaining_weight || 0)); group.initial_weight += Math.max(0, Number(spool.initial_weight || 0)); group.spool_count += Math.max(0, Number(spool.spool_count || 0)); group.source_count += 1; group.spool_ids.push(spool.id);
     groups.set(key, group);
   }
@@ -2307,25 +2308,25 @@ function stockEntry(payload, position = null) {
   if (hasSpoolSizing && (!Number.isInteger(spoolCount) || spoolCount < 1 || spoolCount > 10000)) throw new Error(`Indica um número válido de bobines${reference}.`);
   const weight = hasSpoolSizing ? spoolWeight * spoolCount : Number(payload?.remaining_weight ?? payload?.initial_weight);
   if (!Number.isFinite(weight) || weight <= 0) throw new Error(`Indica uma quantidade válida em gramas${reference}.`);
-  return { material, color, weight, spool_weight: hasSpoolSizing ? spoolWeight : null, spool_count: hasSpoolSizing ? spoolCount : null, brand: clean(payload?.brand, 80), color_hex: clean(payload?.color_hex, 16) || '#6f747a' };
+  return { material, color, weight, unit_weight: hasSpoolSizing ? spoolWeight : null, spool_count: hasSpoolSizing ? spoolCount : null, brand: clean(payload?.brand, 80), color_hex: clean(payload?.color_hex, 16) || '#6f747a' };
 }
 function addStock(saved, entry, now) {
-  const existing = saved.spools.find((item) => normalizedMaterial(item.material) === normalizedMaterial(entry.material) && normalizedColor(item.color_name || item.color) === normalizedColor(entry.color) && clean(item.brand, 80).toLowerCase() === entry.brand.toLowerCase());
+  const existing = saved.spools.find((item) => normalizedMaterial(item.material) === normalizedMaterial(entry.material) && normalizedColor(item.color_name || item.color) === normalizedColor(entry.color) && clean(item.brand, 80).toLowerCase() === entry.brand.toLowerCase() && Number(item.unit_weight || 0) === Number(entry.unit_weight || 0));
   if (existing) {
     existing.initial_weight = Number(existing.initial_weight || 0) + entry.weight;
     existing.remaining_weight = Number(existing.remaining_weight || 0) + entry.weight;
     if (entry.spool_count) existing.spool_count = Number(existing.spool_count || 0) + entry.spool_count;
     existing.inventory_mode = 'stock'; existing.updated_at = now;
-    return { spool: localSpool(existing), merged: true, added_weight: entry.weight };
+    return { spool: localSpool(existing), merged: true, added_weight: entry.weight, added_spool_count: entry.spool_count || 0 };
   }
-  const spool = { id: nextId(saved.spools), material: entry.material, color_name: entry.color, color_hex: entry.color_hex, brand: entry.brand, inventory_mode: 'stock', spool_count: entry.spool_count || null, initial_weight: entry.weight, used_weight: 0, remaining_weight: entry.weight, created_at: now, updated_at: now };
+  const spool = { id: nextId(saved.spools), material: entry.material, color_name: entry.color, color_hex: entry.color_hex, brand: entry.brand, inventory_mode: 'stock', unit_weight: entry.unit_weight || null, spool_count: entry.spool_count || null, initial_weight: entry.weight, used_weight: 0, remaining_weight: entry.weight, created_at: now, updated_at: now };
   saved.spools.push(spool);
-  return { spool: localSpool(spool), merged: false, added_weight: entry.weight };
+  return { spool: localSpool(spool), merged: false, added_weight: entry.weight, added_spool_count: entry.spool_count || 0 };
 }
 app.post('/api/spools', (req, res) => {
   try {
     const saved = state(); const result = addStock(saved, stockEntry(req.body), new Date().toISOString()); save(saved);
-    res.status(result.merged ? 200 : 201).json({ ...result.spool, merged: result.merged, added_weight: result.added_weight });
+    res.status(result.merged ? 200 : 201).json({ ...result.spool, merged: result.merged, added_weight: result.added_weight, added_spool_count: result.added_spool_count });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
 app.post('/api/spools/bulk', (req, res) => {
@@ -2340,9 +2341,10 @@ app.post('/api/spools/bulk', (req, res) => {
     res.status(201).json({
       total: records.length,
       added_weight: records.reduce((sum, record) => sum + record.added_weight, 0),
+      added_spool_count: records.reduce((sum, record) => sum + record.added_spool_count, 0),
       created: records.filter((record) => !record.merged).length,
       merged: records.filter((record) => record.merged).length,
-      records: records.map((record) => ({ ...record.spool, merged: record.merged, added_weight: record.added_weight })),
+      records: records.map((record) => ({ ...record.spool, merged: record.merged, added_weight: record.added_weight, added_spool_count: record.added_spool_count })),
     });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });

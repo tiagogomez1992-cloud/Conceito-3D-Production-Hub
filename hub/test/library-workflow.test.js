@@ -248,6 +248,14 @@ test('stock calcula o total a partir do peso e do número de bobines', async () 
   const petgCf = summary.body.spools.stock.find((entry) => entry.material === 'PETG-CF' && entry.color_name === 'Azul');
   assert.equal(petgCf.remaining_weight, 2500);
   assert.equal(petgCf.spool_count, 10);
+  const secondSize = await json('/api/spools/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entries: [
+    { material: 'PETG-CF', color: 'Azul', brand: 'Pro3DWorld', spool_weight: 1000, spool_count: 1 },
+  ] }) });
+  assert.equal(secondSize.response.status, 201);
+  const afterSecondSize = await json('/api/summary');
+  const sizes = afterSecondSize.body.spools.stock.filter((entry) => entry.material === 'PETG-CF' && entry.color_name === 'Azul');
+  assert.equal(sizes.length, 2);
+  assert.deepEqual(sizes.map((entry) => entry.unit_weight).sort((left, right) => left - right), [250, 1000]);
   const rejected = await json('/api/spools/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entries: [
     { material: 'PETG-CF', color: 'Azul', spool_weight: 300, spool_count: 1 },
   ] }) });
