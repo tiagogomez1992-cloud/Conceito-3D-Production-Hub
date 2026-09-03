@@ -237,6 +237,23 @@ test('stock aceita várias linhas numa única confirmação e acumula material i
   assert.equal(asa.remaining_weight, 1500);
 });
 
+test('stock calcula o total a partir do peso e do número de bobines', async () => {
+  const saved = await json('/api/spools/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entries: [
+    { material: 'PETG-CF', color: 'Azul', brand: 'Pro3DWorld', spool_weight: 250, spool_count: 10 },
+  ] }) });
+  assert.equal(saved.response.status, 201);
+  assert.equal(saved.body.added_weight, 2500);
+  assert.equal(saved.body.records[0].spool_count, 10);
+  const summary = await json('/api/summary');
+  const petgCf = summary.body.spools.stock.find((entry) => entry.material === 'PETG-CF' && entry.color_name === 'Azul');
+  assert.equal(petgCf.remaining_weight, 2500);
+  assert.equal(petgCf.spool_count, 10);
+  const rejected = await json('/api/spools/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entries: [
+    { material: 'PETG-CF', color: 'Azul', spool_weight: 300, spool_count: 1 },
+  ] }) });
+  assert.equal(rejected.response.status, 400);
+});
+
 test('produção rápida filtra impressoras pelo perfil do G-code e cria trabalho autónomo', async () => {
   const part = await json('/api/library-parts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'envio rápido' }) });
   assert.equal(part.response.status, 201);

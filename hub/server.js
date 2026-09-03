@@ -1370,11 +1370,11 @@ function materialStock(items) {
     const color = clean(spool.color_name || spool.color || '', 80) || 'Sem cor';
     const brand = clean(spool.brand || spool.filament?.vendor?.name || '', 80);
     const key = `${normalizedMaterial(material)}|${normalizedColor(color)}|${brand.toLowerCase()}`;
-    const group = groups.get(key) || { id: `stock:${key}`, material, color_name: color, color_hex: spool.color_hex || spool.filament?.color_hex || '#6f747a', brand, remaining_weight: 0, initial_weight: 0, source_count: 0, spool_ids: [], filament: { material, color_hex: spool.color_hex || spool.filament?.color_hex || '#6f747a', vendor: { name: brand || 'Sem fabricante' } } };
-    group.remaining_weight += Math.max(0, Number(spool.remaining_weight || 0)); group.initial_weight += Math.max(0, Number(spool.initial_weight || 0)); group.source_count += 1; group.spool_ids.push(spool.id);
+    const group = groups.get(key) || { id: `stock:${key}`, material, color_name: color, color_hex: spool.color_hex || spool.filament?.color_hex || '#6f747a', brand, remaining_weight: 0, initial_weight: 0, spool_count: 0, source_count: 0, spool_ids: [], filament: { material, color_hex: spool.color_hex || spool.filament?.color_hex || '#6f747a', vendor: { name: brand || 'Sem fabricante' } } };
+    group.remaining_weight += Math.max(0, Number(spool.remaining_weight || 0)); group.initial_weight += Math.max(0, Number(spool.initial_weight || 0)); group.spool_count += Math.max(0, Number(spool.spool_count || 0)); group.source_count += 1; group.spool_ids.push(spool.id);
     groups.set(key, group);
   }
-  return [...groups.values()].map((item) => ({ ...item, remaining_weight: Math.round(item.remaining_weight), initial_weight: Math.round(item.initial_weight) })).sort((left, right) => `${left.material} ${left.color_name}`.localeCompare(`${right.material} ${right.color_name}`, 'pt-PT'));
+  return [...groups.values()].map((item) => ({ ...item, remaining_weight: Math.round(item.remaining_weight), initial_weight: Math.round(item.initial_weight), spool_count: Math.round(item.spool_count) })).sort((left, right) => `${left.material} ${left.color_name}`.localeCompare(`${right.material} ${right.color_name}`, 'pt-PT'));
 }
 const localFilamentCatalog = [
   { id: 1, material: 'PLA', color_name: 'Preto', color_hex: '#1b1b1b', name: 'PLA Preto' },
@@ -2297,21 +2297,28 @@ app.post('/api/scheduler/dispatch', async (_req, res) => forwarded(res, await sa
 function stockEntry(payload, position = null) {
   const material = clean(payload?.material, 80);
   const color = clean(payload?.color, 80);
-  const weight = Number(payload?.remaining_weight ?? payload?.initial_weight);
   const reference = position === null ? '' : ` na linha ${position + 1}`;
   if (!material || !color) throw new Error(`Indica o material e a cor do stock${reference}.`);
+  const hasSpoolSizing = payload?.spool_weight !== undefined || payload?.spool_count !== undefined;
+  const spoolWeight = Number(payload?.spool_weight);
+  const spoolCount = Number(payload?.spool_count);
+  const allowedWeights = [250, 500, 750, 1000];
+  if (hasSpoolSizing && !allowedWeights.includes(spoolWeight)) throw new Error(`Escolhe 250 g, 500 g, 750 g ou 1000 g por bobine${reference}.`);
+  if (hasSpoolSizing && (!Number.isInteger(spoolCount) || spoolCount < 1 || spoolCount > 10000)) throw new Error(`Indica um número válido de bobines${reference}.`);
+  const weight = hasSpoolSizing ? spoolWeight * spoolCount : Number(payload?.remaining_weight ?? payload?.initial_weight);
   if (!Number.isFinite(weight) || weight <= 0) throw new Error(`Indica uma quantidade válida em gramas${reference}.`);
-  return { material, color, weight, brand: clean(payload?.brand, 80), color_hex: clean(payload?.color_hex, 16) || '#6f747a' };
+  return { material, color, weight, spool_weight: hasSpoolSizing ? spoolWeight : null, spool_count: hasSpoolSizing ? spoolCount : null, brand: clean(payload?.brand, 80), color_hex: clean(payload?.color_hex, 16) || '#6f747a' };
 }
 function addStock(saved, entry, now) {
   const existing = saved.spools.find((item) => normalizedMaterial(item.material) === normalizedMaterial(entry.material) && normalizedColor(item.color_name || item.color) === normalizedColor(entry.color) && clean(item.brand, 80).toLowerCase() === entry.brand.toLowerCase());
   if (existing) {
     existing.initial_weight = Number(existing.initial_weight || 0) + entry.weight;
     existing.remaining_weight = Number(existing.remaining_weight || 0) + entry.weight;
+    if (entry.spool_count) existing.spool_count = Number(existing.spool_count || 0) + entry.spool_count;
     existing.inventory_mode = 'stock'; existing.updated_at = now;
     return { spool: localSpool(existing), merged: true, added_weight: entry.weight };
   }
-  const spool = { id: nextId(saved.spools), material: entry.material, color_name: entry.color, color_hex: entry.color_hex, brand: entry.brand, inventory_mode: 'stock', initial_weight: entry.weight, used_weight: 0, remaining_weight: entry.weight, created_at: now, updated_at: now };
+  const spool = { id: nextId(saved.spools), material: entry.material, color_name: entry.color, color_hex: entry.color_hex, brand: entry.brand, inventory_mode: 'stock', spool_count: entry.spool_count || null, initial_weight: entry.weight, used_weight: 0, remaining_weight: entry.weight, created_at: now, updated_at: now };
   saved.spools.push(spool);
   return { spool: localSpool(spool), merged: false, added_weight: entry.weight };
 }
