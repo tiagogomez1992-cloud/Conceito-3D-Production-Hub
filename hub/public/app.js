@@ -228,7 +228,7 @@ function renderDiscovery(data) {
   box.innerHTML = `<div class="discovery-heading"><div><p class="eyebrow">DESCOBERTA LOCAL</p><h2>${data.printers?.length || 0} impressora(s) encontrada(s)</h2><p>Rede analisada: ${escape(networks || 'não identificada')}</p></div></div>${data.printers?.length ? `<div class="discovery-grid">${data.printers.map((printer) => { const exists = discoveredPrinterIsRegistered(printer); return `<article class="discovery-card"><span class="status ${exists ? 'offline' : 'online'}"></span><div><strong>${escape(printer.detected_as)}</strong><small>${escape(printer.ip)}${printer.port !== 80 ? `:${printer.port}` : ''}${printer.requirements ? ` · ${escape(printer.requirements)}` : ''}</small></div><button class="compact ${exists ? 'secondary' : ''}" ${exists ? 'disabled aria-disabled="true"' : `data-add-discovered='${escape(JSON.stringify(printer))}'`}>${exists ? 'Já adicionada' : 'Preparar adição'}</button></article>`; }).join('')}</div>` : '<p class="empty">Não foram encontrados serviços de impressão com API local nesta rede. Equipamentos sem modo LAN ou sem API local terão de ser adicionados manualmente.</p>'}`;
 }
 function stockUnitText(unitWeight) { return Number(unitWeight) ? `${Number(unitWeight)} g por bobine` : 'Peso de embalagem não definido'; }
-function renderSpools() { const stock = latest.stock?.length ? latest.stock : latest.spools; $('spool-grid').innerHTML = stock.length ? stock.map((s) => { const info = spoolInfo(s); const low = info.remaining > 0 && info.remaining < 200; const sources = Number(s.source_count || 1); const count = Number(s.spool_count || 0); const pack = stockUnitText(s.unit_weight); const countLabel = count ? `${count} ${count === 1 ? 'bobine selada' : 'bobines seladas'}` : 'Registo legado'; return `<article class="spool-card"><div class="spool-swatch" style="background:${escape(s.filament?.color_hex || '#6f747a')}"></div><div><p class="eyebrow">ARTIGO EM STOCK${sources > 1 ? ` · ${sources} registos` : ''}</p><h2>${escape(info.material)}${s.color_name ? ` · ${escape(s.color_name)}` : ''}</h2><p>${escape(s.filament?.vendor?.name || 'Sem fabricante')} · ${escape(pack)}</p></div><div class="spool-weight ${low ? 'low' : ''}"><strong>${escape(countLabel)}</strong><small>${info.remaining ? `${new Intl.NumberFormat('pt-PT').format(info.remaining)} g no total` : low ? 'Abaixo de 200 g' : 'Disponível'}</small></div></article>`; }).join('') : '<p class="empty">Ainda não há artigos de filamento em stock.</p>'; }
+function renderSpools() { const stock = latest.stock?.length ? latest.stock : latest.spools; $('spool-grid').innerHTML = stock.length ? stock.map((s) => { const info = spoolInfo(s); const low = info.remaining > 0 && info.remaining < 200; const sources = Number(s.source_count || 1); const count = Number(s.spool_count || 0); const pack = stockUnitText(s.unit_weight); const countLabel = count ? `${count} ${count === 1 ? 'bobine selada' : 'bobines seladas'}` : 'Registo legado'; const articleId = Array.isArray(s.spool_ids) && s.spool_ids.length === 1 ? Number(s.spool_ids[0]) : null; const actions = articleId ? `<div class="spool-card-actions"><button class="compact secondary" data-edit-stock="${articleId}">Editar</button><button class="compact danger" data-delete-stock="${articleId}" data-stock-name="${escape(`${info.material} ${s.color_name || ''}`.trim())}">Remover</button></div>` : '<small class="stock-legacy-note">Registo combinado: edita-o depois de separar as entradas.</small>'; return `<article class="spool-card"><div class="spool-swatch" style="background:${escape(s.filament?.color_hex || '#6f747a')}"></div><div><p class="eyebrow">ARTIGO EM STOCK${sources > 1 ? ` · ${sources} registos` : ''}</p><h2>${escape(info.material)}${s.color_name ? ` · ${escape(s.color_name)}` : ''}</h2><p>${escape(s.filament?.vendor?.name || 'Sem fabricante')} · ${escape(pack)}</p>${actions}</div><div class="spool-weight ${low ? 'low' : ''}"><strong>${escape(countLabel)}</strong><small>${info.remaining ? `${new Intl.NumberFormat('pt-PT').format(info.remaining)} g no total` : low ? 'Abaixo de 200 g' : 'Disponível'}</small></div></article>`; }).join('') : '<p class="empty">Ainda não há artigos de filamento em stock.</p>'; }
 function stockWeightOptions(selected = 1000) { return [250, 500, 750, 1000].map((weight) => `<option value="${weight}" ${Number(selected) === weight ? 'selected' : ''}>${weight} g</option>`).join(''); }
 function stockRowMarkup(values = {}) { const weight = Number(values.spool_weight || 1000); const count = Math.max(1, Number(values.spool_count || 1)); return `<div class="stock-entry-row" data-stock-row><label>Material<input data-stock-field="material" required placeholder="Ex.: PETG" value="${escape(values.material || '')}"></label><label>Cor<input data-stock-field="color" required placeholder="Ex.: Preto" value="${escape(values.color || '')}"></label><label>Fabricante<input data-stock-field="brand" placeholder="Opcional" value="${escape(values.brand || '')}"></label><label>Peso da bobine selada<select data-stock-field="spool_weight" required>${stockWeightOptions(weight)}</select></label><label>N.º de bobines<input data-stock-field="spool_count" type="number" min="1" max="10000" required value="${escape(count)}"></label><output class="stock-line-total" data-stock-total>${count} ${count === 1 ? 'bobine' : 'bobines'} · ${new Intl.NumberFormat('pt-PT').format(weight * count)} g</output><button class="compact secondary stock-remove" type="button" data-remove-stock-row aria-label="Remover esta linha">Remover</button></div>`; }
 function updateStockRowTotal(row) { const weight = Number(row?.querySelector('[data-stock-field="spool_weight"]')?.value); const count = Number(row?.querySelector('[data-stock-field="spool_count"]')?.value); const total = row?.querySelector('[data-stock-total]'); if (total) total.textContent = Number.isFinite(weight * count) && weight > 0 && count > 0 ? `${count} ${count === 1 ? 'bobine' : 'bobines'} · ${new Intl.NumberFormat('pt-PT').format(weight * count)} g` : 'Indica o número de bobines'; }
@@ -374,6 +374,10 @@ const historyView = document.createElement('section');
 historyView.className = 'view'; historyView.id = 'history';
 historyView.innerHTML = '<div class="section-heading"><div><p class="eyebrow">ARQUIVO</p><h1>Histórico de encomendas</h1><p>Encomendas concluídas, respetivos G-codes e quantidades produzidas.</p></div></div><div id="history-board" class="history-board"><p class="empty">A carregar histórico…</p></div>';
 document.querySelector('main.shell').insertBefore(historyView, $('files'));
+const stockEditForm = document.createElement('form');
+stockEditForm.id = 'stock-edit-form'; stockEditForm.className = 'inline-form stock-edit-form hidden';
+stockEditForm.innerHTML = `<label>Material<input name="material" required placeholder="Ex.: PETG"></label><label>Cor<input name="color" required placeholder="Ex.: Preto"></label><label>Fabricante<input name="brand" placeholder="Opcional"></label><label>Peso da bobine selada<select name="spool_weight" required>${stockWeightOptions()}</select></label><label>N.º de bobines<input name="spool_count" type="number" min="1" max="10000" required></label><button type="submit">Guardar alterações</button><button type="button" class="secondary" data-close-form="stock-edit-form">Cancelar</button><p class="form-note">Só podes alterar ou remover um artigo que ainda não esteja associado a uma impressora nem tenha consumos registados.</p>`;
+$('spool-grid').before(stockEditForm);
 historyTab.onclick = () => { document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === historyTab)); document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view === historyView)); };
 document.addEventListener('click', async (event) => {
   const open = event.target.closest('[data-open-form]'), close = event.target.closest('[data-close-form]');
@@ -394,6 +398,26 @@ document.addEventListener('click', async (event) => {
   const editPrinter = event.target.closest('[data-edit-printer]'); if (editPrinter) openPrinterDetailPage(editPrinter.dataset.editPrinter);
   const deletePrinter = event.target.closest('[data-delete-printer]'); if (deletePrinter && confirm(`Remover a impressora ${deletePrinter.dataset.printerName}? Esta ação não altera a impressora física.`)) try { await api(`/api/printers/${deletePrinter.dataset.deletePrinter}`, { method: 'DELETE' }); toast('Impressora removida do portal.'); if (isPrinterEditorPage()) closePrinterDetailPage(); else update(); } catch (error) { toast(error.message, 'error'); }
   const deleteCustomer = event.target.closest('[data-delete-customer]'); if (deleteCustomer && confirm('Remover este cliente e o respetivo modelo?')) try { await api(`/api/customers/${deleteCustomer.dataset.deleteCustomer}`, { method: 'DELETE' }); toast('Cliente removido.'); refreshCustomers(); } catch (error) { toast(error.message, 'error'); }
+  const editStock = event.target.closest('[data-edit-stock]');
+  if (editStock) {
+    const article = latest.spools.find((item) => Number(item.id) === Number(editStock.dataset.editStock));
+    if (!article) { toast('Não foi possível localizar este artigo no stock.', 'error'); return; }
+    const unitWeight = [250, 500, 750, 1000].includes(Number(article.unit_weight)) ? Number(article.unit_weight) : 1000;
+    stockEditForm.dataset.stockId = article.id;
+    stockEditForm.elements.material.value = article.material || '';
+    stockEditForm.elements.color.value = article.color_name || article.color || '';
+    stockEditForm.elements.brand.value = article.brand || '';
+    stockEditForm.elements.spool_weight.value = unitWeight;
+    stockEditForm.elements.spool_count.value = Math.max(1, Number(article.spool_count || 1));
+    stockEditForm.classList.remove('hidden'); stockEditForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return;
+  }
+  const deleteStock = event.target.closest('[data-delete-stock]');
+  if (deleteStock && confirm(`Remover o artigo ${deleteStock.dataset.stockName}? Esta ação não pode ser anulada.`)) {
+    try { await api(`/api/spools/${deleteStock.dataset.deleteStock}`, { method: 'DELETE' }); toast('Artigo removido do stock.'); await update(); }
+    catch (error) { toast(error.message, 'error'); }
+    return;
+  }
   const deleteFile = event.target.closest('[data-delete-file]'); if (deleteFile && confirm('Remover este G-code da biblioteca?')) try { await api(`/api/files/${deleteFile.dataset.deleteFile}`, { method: 'DELETE' }); toast('G-code removido.'); refreshFiles(); } catch (error) { toast(error.message, 'error'); }
   const deletePart = event.target.closest('[data-delete-library-part]'); if (deletePart && confirm('Remover esta peça vazia da biblioteca?')) try { await api(`/api/library-parts/${deletePart.dataset.deleteLibraryPart}`, { method: 'DELETE' }); toast('Peça removida.'); refreshFiles(); } catch (error) { toast(error.message, 'error'); }
   const deleteOrder = event.target.closest('[data-delete-order]'); if (deleteOrder && confirm('Remover esta encomenda? Os G-codes anexados a ela também serão eliminados.')) try { await api(`/api/orders/${deleteOrder.dataset.deleteOrder}`, { method: 'DELETE' }); toast('Encomenda removida.'); update(); } catch (error) { toast(error.message, 'error'); }
@@ -537,6 +561,20 @@ for (const id of ['order-form', 'project-form', 'printer-form', 'spool-form', 'c
     const result = await api(endpoint, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
     formElement.reset(); if (id === 'printer-form') { resetPrinterFormMode(); setPrinterCatalogSelection(); } if (id === 'order-form') resetOrderPdfAnalysis(); formElement.classList.add('hidden'); if (id === 'customer-form') { resetTemplateForm(); await refreshCustomers(); } if (id === 'library-part-form') await refreshFiles(); toast(id === 'customer-form' ? 'Cliente e modelo guardados.' : id === 'library-part-form' ? 'Peça criada. Agora adiciona os G-codes.' : id === 'printer-form' ? wasEditingPrinter ? 'Impressora atualizada.' : 'Impressora adicionada ao Production Hub.' : id === 'spool-form' ? result.merged ? `${result.added_weight} g somados ao stock existente.` : 'Material adicionado ao stock do portal.' : result.status === 'draft' ? 'Rascunho criado. Valida as peças antes de enviar para produção.' : 'Encomenda criada com os dados confirmados.'); update();
   } catch (error) { toast(error.message, 'error'); }
+});
+stockEditForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const stockId = Number(stockEditForm.dataset.stockId);
+  if (!stockId) return toast('Artigo de stock inválido.', 'error');
+  const values = Object.fromEntries(new FormData(stockEditForm).entries());
+  const button = stockEditForm.querySelector('button[type="submit"]'); const originalLabel = button.textContent;
+  button.disabled = true; button.textContent = 'A guardar…';
+  try {
+    await api(`/api/spools/${stockId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+    delete stockEditForm.dataset.stockId; stockEditForm.reset(); stockEditForm.classList.add('hidden');
+    toast('Artigo de stock atualizado.'); await update();
+  } catch (error) { toast(error.message, 'error'); }
+  finally { button.disabled = false; button.textContent = originalLabel; }
 });
 document.addEventListener('submit', async (event) => {
   const form = event.target;

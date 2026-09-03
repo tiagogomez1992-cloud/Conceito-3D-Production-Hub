@@ -262,6 +262,23 @@ test('stock calcula o total a partir do peso e do número de bobines', async () 
   assert.equal(rejected.response.status, 400);
 });
 
+test('artigo de stock fechado pode ser editado ou removido antes de entrar em uso', async () => {
+  const created = await json('/api/spools/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entries: [
+    { material: 'PVA', color: 'Natural', brand: 'Pro3DWorld', spool_weight: 250, spool_count: 2 },
+  ] }) });
+  assert.equal(created.response.status, 201);
+  const articleId = created.body.records[0].id;
+  const edited = await json(`/api/spools/${articleId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ material: 'PVA', color: 'Natural', brand: 'Pro3DWorld', spool_weight: 500, spool_count: 3 }) });
+  assert.equal(edited.response.status, 200);
+  assert.equal(edited.body.unit_weight, 500);
+  assert.equal(edited.body.spool_count, 3);
+  assert.equal(edited.body.remaining_weight, 1500);
+  const removed = await json(`/api/spools/${articleId}`, { method: 'DELETE' });
+  assert.equal(removed.response.status, 204);
+  const summary = await json('/api/summary');
+  assert.equal(summary.body.spools.stock.some((entry) => entry.material === 'PVA' && entry.color_name === 'Natural'), false);
+});
+
 test('produção rápida filtra impressoras pelo perfil do G-code e cria trabalho autónomo', async () => {
   const part = await json('/api/library-parts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'envio rápido' }) });
   assert.equal(part.response.status, 201);

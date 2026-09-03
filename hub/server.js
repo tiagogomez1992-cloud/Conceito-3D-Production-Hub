@@ -2323,6 +2323,13 @@ function addStock(saved, entry, now) {
   saved.spools.push(spool);
   return { spool: localSpool(spool), merged: false, added_weight: entry.weight, added_spool_count: entry.spool_count || 0 };
 }
+function stockArticleUsage(saved, spoolId) {
+  const id = Number(spoolId);
+  const assigned = Object.values(saved.assignments || {}).some((assignment) => Number(assignment?.spool_id) === id);
+  const materialSlot = Object.values(saved.printer_materials || {}).some((record) => Array.isArray(record?.slots) && record.slots.some((slot) => Number(slot?.spool_id) === id));
+  const consumed = (saved.consumption || []).some((entry) => Number(entry?.spool_id) === id);
+  return { assigned: assigned || materialSlot, consumed };
+}
 app.post('/api/spools', (req, res) => {
   try {
     const saved = state(); const result = addStock(saved, stockEntry(req.body), new Date().toISOString()); save(saved);
@@ -2347,6 +2354,24 @@ app.post('/api/spools/bulk', (req, res) => {
       records: records.map((record) => ({ ...record.spool, merged: record.merged, added_weight: record.added_weight, added_spool_count: record.added_spool_count })),
     });
   } catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.put('/api/spools/:id', (req, res) => {
+  const saved = state(); const spool = saved.spools.find((item) => Number(item.id) === Number(req.params.id));
+  if (!spool) return res.status(404).json({ error: 'Artigo de stock não encontrado.' });
+  const usage = stockArticleUsage(saved, spool.id);
+  if (usage.assigned || usage.consumed) return res.status(409).json({ error: 'Este artigo já está em uso numa impressora ou tem consumos registados; não pode ser alterado como stock fechado.' });
+  try {
+    const entry = stockEntry(req.body);
+    Object.assign(spool, { material: entry.material, color_name: entry.color, color_hex: entry.color_hex, brand: entry.brand, inventory_mode: 'stock', unit_weight: entry.unit_weight, spool_count: entry.spool_count, initial_weight: entry.weight, remaining_weight: entry.weight, used_weight: 0, updated_at: new Date().toISOString() });
+    save(saved); res.json(localSpool(spool));
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.delete('/api/spools/:id', (req, res) => {
+  const saved = state(); const spool = saved.spools.find((item) => Number(item.id) === Number(req.params.id));
+  if (!spool) return res.status(404).json({ error: 'Artigo de stock não encontrado.' });
+  const usage = stockArticleUsage(saved, spool.id);
+  if (usage.assigned || usage.consumed) return res.status(409).json({ error: 'Este artigo já está em uso numa impressora ou tem consumos registados; não pode ser removido.' });
+  saved.spools = saved.spools.filter((item) => Number(item.id) !== Number(spool.id)); save(saved); res.status(204).end();
 });
 app.get('/api/filaments', (_req, res) => res.json(localFilamentCatalog));
 app.post('/api/assignments', (req, res) => { const { printer_id, spool_id } = req.body || {}; if (!printer_id || !spool_id) return res.status(400).json({ error: 'Impressora e bobine são obrigatórias.' }); const saved = state(); saved.assignments[String(printer_id)] = { spool_id: Number(spool_id), assigned_at: new Date().toISOString() }; save(saved); res.status(201).json(saved.assignments[String(printer_id)]); });
