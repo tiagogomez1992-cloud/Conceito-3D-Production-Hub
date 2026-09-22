@@ -167,6 +167,25 @@ test('3MF extrai materiais, cores, bico e quantidade de peças do projeto', asyn
   assert.deepEqual(imported.body.metadata.materials.map((entry) => [entry.material, entry.color_hex]), [['PETG', '#FF6A00'], ['PLA', '#008BFF']]);
 });
 
+test('3MF grande mantém os metadados do slicer sem expandir a malha 3D', async () => {
+  const part = await json('/api/library-parts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'peça 3MF grande' }) });
+  assert.equal(part.response.status, 201);
+  const form = new FormData();
+  form.append('part_id', part.body.id); form.append('printer_model', 'Bambu Lab A1');
+  form.append('quantity', '4');
+  form.append('gcode', new Blob([storedZip([
+    { name: '3D/3dmodel.model', data: Buffer.alloc((8 * 1024 * 1024) + 1, 'M') },
+    { name: 'Metadata/project_settings.config', data: '{"filament_type":["PETG"],"filament_colour":["#101010"],"nozzle_diameter":["0.4"]}' },
+  ])], { type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml' }), 'malha-grande.3mf');
+  const imported = await json('/api/files', { method: 'POST', body: form });
+  assert.equal(imported.response.status, 201);
+  assert.equal(imported.body.metadata.valid, true);
+  assert.equal(imported.body.metadata.quantity, 4);
+  assert.equal(imported.body.metadata.material, 'PETG');
+  assert.equal(imported.body.metadata.nozzle, 0.4);
+  assert.match(imported.body.metadata.warnings.join(' '), /dados técnicos grandes/i);
+});
+
 test('impressora, bobine e projeto são guardados pelo próprio portal', async () => {
   const printer = await json('/api/printers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'S1 MAX', ip: '127.0.0.1', model: 'ANYCUBIC S1 MAX', type: 'klipper' }) });
   assert.equal(printer.response.status, 201);

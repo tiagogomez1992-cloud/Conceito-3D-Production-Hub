@@ -261,8 +261,11 @@ function gcodeMetadata(contents, supplied = {}) {
   return metadataResult({ quantity, material, color, nozzle, filament, materials: suppliedMaterials.length ? suppliedMaterials : [{ material, color }], source: 'gcode' });
 }
 
-function zipEntries(buffer) {
+function zipEntries(buffer, options = {}) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 22) throw new Error('O ficheiro não é um arquivo 3MF válido.');
+  const select = typeof options.select === 'function' ? options.select : () => true;
+  const maxEntryBytes = Math.min(Number(options.maxEntryBytes) || (8 * 1024 * 1024), 8 * 1024 * 1024);
+  const maxTotalBytes = Math.min(Number(options.maxTotalBytes) || (24 * 1024 * 1024), 24 * 1024 * 1024);
   const endSignature = 0x06054b50;
   let end = -1;
   for (let position = Math.max(0, buffer.length - 65557); position <= buffer.length - 22; position += 1) {
@@ -272,7 +275,11 @@ function zipEntries(buffer) {
   const count = buffer.readUInt16LE(end + 10);
   const centralOffset = buffer.readUInt32LE(end + 16);
   if (count > 500 || centralOffset >= buffer.length) throw new Error('O arquivo 3MF excede os limites suportados.');
-  const entries = new Map(); let cursor = centralOffset; let total = 0;
+  const entries = new Map();
+  // Keeping this information lets callers continue with the small, useful
+  // metadata in a large 3MF while never expanding the model mesh in memory.
+  entries.skipped = [];
+  let cursor = centralOffset; let total = 0;
   for (let index = 0; index < count; index += 1) {
     if (cursor + 46 > buffer.length || buffer.readUInt32LE(cursor) !== 0x02014b50) throw new Error('Índice ZIP do 3MF inválido.');
     const flags = buffer.readUInt16LE(cursor + 8);
@@ -286,7 +293,11 @@ function zipEntries(buffer) {
     const entryEnd = cursor + 46 + nameLength + extraLength + commentLength;
     if (entryEnd > buffer.length || localOffset + 30 > buffer.length) throw new Error('Entrada ZIP do 3MF inválida.');
     const name = buffer.subarray(cursor + 46, cursor + 46 + nameLength).toString(flags & 0x800 ? 'utf8' : 'utf8').replace(/\\/g, '/');
-    if (uncompressedSize > 8 * 1024 * 1024 || total + uncompressedSize > 24 * 1024 * 1024) throw new Error('O conteúdo do 3MF é demasiado grande para leitura segura.');
+    const wanted = select(name, { compressedSize, uncompressedSize });
+    if (!wanted) { cursor = entryEnd; continue; }
+    if (uncompressedSize > maxEntryBytes || total + uncompressedSize > maxTotalBytes) {
+      entries.skipped.push({ name, reason: 'size' }); cursor = entryEnd; continue;
+    }
     if (buffer.readUInt32LE(localOffset) !== 0x04034b50) throw new Error('Cabeçalho ZIP do 3MF inválido.');
     const localNameLength = buffer.readUInt16LE(localOffset + 26);
     const localExtraLength = buffer.readUInt16LE(localOffset + 28);
@@ -295,9 +306,12 @@ function zipEntries(buffer) {
     if (dataEnd > buffer.length) throw new Error('Dados ZIP do 3MF inválidos.');
     let value;
     if (compression === 0) value = buffer.subarray(dataStart, dataEnd);
-    else if (compression === 8) value = zlib.inflateRawSync(buffer.subarray(dataStart, dataEnd));
-    else { cursor = entryEnd; continue; }
-    if (value.length !== uncompressedSize || value.length > 8 * 1024 * 1024) throw new Error('Entrada 3MF inválida ou demasiado grande.');
+    else if (compression === 8) {
+      try { value = zlib.inflateRawSync(buffer.subarray(dataStart, dataEnd), { maxOutputLength: maxEntryBytes }); } catch {
+        entries.skipped.push({ name, reason: 'inflate' }); cursor = entryEnd; continue;
+      }
+    } else { entries.skipped.push({ name, reason: 'compression' }); cursor = entryEnd; continue; }
+    if (value.length !== uncompressedSize || value.length > maxEntryBytes) throw new Error('Entrada 3MF inválida ou demasiado grande.');
     entries.set(name.toLowerCase(), { name, data: value }); total += value.length; cursor = entryEnd;
   }
   return entries;
@@ -319,7 +333,10 @@ function xmlMaterialEntries(model) {
   });
 }
 function metadataFrom3mf(buffer, supplied = {}) {
-  const entries = zipEntries(buffer);
+  const metadataEntry = (name) => /(?:^|\/)metadata\/(?:project_settings|model_settings|slice_info)\.(?:config|json)$/i.test(name)
+    || /(?:^|\/)3d\/3dmodel\.model$/i.test(name)
+    || /(?:^|\/)metadata\/.*\.gcode$/i.test(name);
+  const entries = zipEntries(buffer, { select: metadataEntry });
   const projectSettings = zipText(entries, /(?:^|\/)metadata\/(?:project_settings|model_settings|slice_info)\.(?:config|json)$/i);
   const model = zipText(entries, /(?:^|\/)3d\/3dmodel\.model$/i);
   const plateGcodes = [...entries.values()].filter((entry) => /(?:^|\/)metadata\/.*\.gcode$/i.test(entry.name));
@@ -343,6 +360,7 @@ function metadataFrom3mf(buffer, supplied = {}) {
   const warnings = [];
   if (!plateGcodes.length) warnings.push('O 3MF não inclui G-code de placa; foram usados os metadados do projeto.');
   if (!materials.length) warnings.push('Não foram encontrados materiais no projeto 3MF.');
+  if (entries.skipped.length) warnings.push('Alguns dados técnicos grandes do 3MF não foram abertos. Confirma os campos preenchidos antes de guardar.');
   return metadataResult({
     quantity,
     material: clean(supplied.material || primary.material, 80),
