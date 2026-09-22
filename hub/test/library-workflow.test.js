@@ -167,6 +167,37 @@ test('3MF extrai materiais, cores, bico e quantidade de peças do projeto', asyn
   assert.deepEqual(imported.body.metadata.materials.map((entry) => [entry.material, entry.color_hex]), [['PETG', '#FF6A00'], ['PLA', '#008BFF']]);
 });
 
+test('3MF distingue filamentos usados da paleta e corrige importações antigas', async () => {
+  const part = await json('/api/library-parts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'paleta Bambu' }) });
+  const archive = storedZip([
+    { name: 'Metadata/project_settings.config', data: '{"filament_type":["PETG","PLA","ABS"],"filament_colour":["#000000","#FFFFFF","#0085D5"],"nozzle_diameter":["0.4"]}' },
+    { name: 'Metadata/slice_info.config', data: '<config><plate><filament id="1" type="PETG" color="#000000" used_g="275.54"/><filament id="2" type="PLA" color="#FFFFFF" used_g="0"/></plate></config>' },
+  ]);
+  const form = new FormData();
+  form.append('part_id', part.body.id); form.append('printer_model', 'Bambu Lab A1'); form.append('quantity', '4');
+  form.append('material', 'PETG'); form.append('color', 'PRETO');
+  form.append('gcode', new Blob([archive]), 'paleta.gcode.3mf');
+  const imported = await json('/api/files', { method: 'POST', body: form });
+  assert.equal(imported.response.status, 201);
+  assert.deepEqual(imported.body.metadata.materials.map((item) => item.material), ['PETG']);
+  assert.equal(imported.body.metadata.filament_grams, 275.54);
+  const statePath = path.join(dataDir, 'portal-state.json');
+  const saved = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  const old = saved.files.find((file) => file.id === imported.body.id);
+  delete old.metadata.material_detection;
+  old.metadata.materials.push({ material: 'ABS', color: '#0085D5' });
+  fs.writeFileSync(statePath, JSON.stringify(saved));
+  const options = await json(`/api/quick-dispatch/options?file_id=${imported.body.id}`);
+  assert.equal(options.response.status, 200);
+  assert.deepEqual(options.body.file.metadata.materials.map((item) => item.material), ['PETG']);
+  const multi = new FormData();
+  multi.append('production_file', new Blob([storedZip([
+    { name: 'Metadata/slice_info.config', data: '<config><plate><filament type="PETG" color="#000000" used_g="20"/><filament type="PLA" color="#FFFFFF" used_g="5" used_for_support="true"/></plate></config>' },
+  ])]), 'multimaterial.3mf');
+  const inspected = await json('/api/quick-dispatch/inspect', { method: 'POST', body: multi });
+  assert.deepEqual(inspected.body.metadata.materials.map((item) => item.material), ['PETG', 'PLA']);
+});
+
 test('3MF grande mantém os metadados do slicer sem expandir a malha 3D', async () => {
   const part = await json('/api/library-parts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'peça 3MF grande' }) });
   assert.equal(part.response.status, 201);

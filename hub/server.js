@@ -332,12 +332,20 @@ function xmlMaterialEntries(model) {
     return { material: attribute('name'), color: attribute('displaycolor'), color_hex: attribute('displaycolor') };
   });
 }
+function slicedFilaments(entries) {
+  const text = zipText(entries, /^metadata\/slice_info\.config$/i);
+  return [...text.matchAll(/<filament\b([^>]*)\/?\s*>/gi)].map((match) => {
+    const attr = (key) => match[1].match(new RegExp(`\\b${key}\\s*=\\s*["']([^"']*)["']`, 'i'))?.[1] || '';
+    return { material: attr('type'), color: attr('color'), grams: Number(attr('used_g')), meters: Number(attr('used_m')), used: attr('used_for_object') === 'true' || attr('used_for_support') === 'true' };
+  }).filter((item) => item.material && (item.grams > 0 || item.meters > 0 || item.used));
+}
 function metadataFrom3mf(buffer, supplied = {}) {
   const metadataEntry = (name) => /(?:^|\/)metadata\/(?:project_settings|model_settings|slice_info)\.(?:config|json)$/i.test(name)
     || /(?:^|\/)3d\/3dmodel\.model$/i.test(name)
     || /(?:^|\/)metadata\/.*\.gcode$/i.test(name);
   const entries = zipEntries(buffer, { select: metadataEntry });
-  const projectSettings = zipText(entries, /(?:^|\/)metadata\/(?:project_settings|model_settings|slice_info)\.(?:config|json)$/i);
+  const projectSettings = zipText(entries, /^metadata\/project_settings\.(?:config|json)$/i);
+  const sliced = slicedFilaments(entries);
   const model = zipText(entries, /(?:^|\/)3d\/3dmodel\.model$/i);
   const plateGcodes = [...entries.values()].filter((entry) => /(?:^|\/)metadata\/.*\.gcode$/i.test(entry.name));
   const gcodeText = plateGcodes.map((entry) => entry.data.toString('utf8')).join('\n').slice(0, 4 * 1024 * 1024);
@@ -347,7 +355,7 @@ function metadataFrom3mf(buffer, supplied = {}) {
   const profileMaterials = materialTypes.map((material, index) => ({ material, color: colors[index] || '', color_hex: colors[index] || '' }));
   const modelMaterials = xmlMaterialEntries(model);
   const suppliedMaterials = suppliedMaterialEntries(supplied);
-  let materials = suppliedMaterials.length ? suppliedMaterials : materialEntries(profileMaterials.length ? profileMaterials : (modelMaterials.length ? modelMaterials : fromGcode.materials));
+  let materials = suppliedMaterials.length ? suppliedMaterials : materialEntries(sliced.length ? sliced : profileMaterials.length ? profileMaterials : (modelMaterials.length ? modelMaterials : fromGcode.materials));
   if (!suppliedMaterials.length && (clean(supplied.material, 80) || clean(supplied.color, 80))) {
     const first = materials[0] || {};
     materials = materialEntries([{ ...first, material: clean(supplied.material, 80) || first.material, color: clean(supplied.color, 80) || first.color, color_hex: clean(supplied.color, 80) || first.color_hex }, ...materials.slice(1)]);
@@ -358,19 +366,21 @@ function metadataFrom3mf(buffer, supplied = {}) {
   const quantity = number(supplied.quantity) || fromGcode.quantity || itemCount || null;
   const primary = materials[0] || { material: fromGcode.material, color: fromGcode.color };
   const warnings = [];
-  if (!plateGcodes.length) warnings.push('O 3MF não inclui G-code de placa; foram usados os metadados do projeto.');
+  if (!plateGcodes.length && !entries.skipped.some((entry) => /\.gcode$/i.test(entry.name))) warnings.push('O 3MF não inclui G-code de placa; foram usados os metadados do projeto.');
   if (!materials.length) warnings.push('Não foram encontrados materiais no projeto 3MF.');
   if (entries.skipped.length) warnings.push('Alguns dados técnicos grandes do 3MF não foram abertos. Confirma os campos preenchidos antes de guardar.');
-  return metadataResult({
+  const result = metadataResult({
     quantity,
     material: clean(supplied.material || primary.material, 80),
     color: clean(supplied.color || primary.color, 80),
     nozzle,
-    filament: number(supplied.filament_grams) || fromGcode.filament_grams,
+    filament: number(supplied.filament_grams) || sliced.reduce((sum, item) => sum + (item.grams || 0), 0) || fromGcode.filament_grams,
     materials: materials.length ? materials : [{ material: supplied.material, color: supplied.color }],
     source: '3mf',
     warnings,
   });
+  result.material_detection = suppliedMaterials.length ? 'confirmed' : sliced.length ? 'slice-info-v1' : 'project';
+  return result;
 }
 function productionFileMetadata(filePath, originalName, supplied = {}) {
   const file = fs.readFileSync(filePath);
@@ -1000,12 +1010,17 @@ function colorHex(value) {
 }
 function materialIsCompatible(slot, requiredMaterial, requiredColor) {
   const material = normalizedMaterial(requiredMaterial);
-  const color = normalizedColor(requiredColor);
+  const color = comparableFilamentColor(requiredColor);
   if (!material && !color) return true;
   if (!slot || (!slot.spool_id && !slot.material)) return false;
   const actualMaterial = normalizedMaterial(slot.material);
-  const actualColor = normalizedColor(slot.color);
-  return (!material || actualMaterial === material) && (!color || actualColor === color);
+  const actualColors = [slot.color, slot.color_hex].filter(Boolean).map(comparableFilamentColor);
+  return (!material || actualMaterial === material) && (!color || actualColors.includes(color));
+}
+function comparableFilamentColor(value) {
+  const name = normalizedColor(value);
+  const aliases = { PRETO: '#000000', BLACK: '#000000', BRANCO: '#FFFFFF', WHITE: '#FFFFFF' };
+  return colorHex(value) || aliases[name] || name;
 }
 function manualPrinterSlots(value, printer) {
   const record = value?.printer_materials?.[String(printer.id)];
@@ -1356,6 +1371,22 @@ function printerCanReceiveWorkNow(printer) {
   return ['IDLE', 'ONLINE', 'FINISHED'].includes(String(printer?.status || '').toUpperCase());
 }
 async function quickDispatchOptions(value, file) {
+  // Older imports used the entire slicer palette. Refresh only when the
+  // original archive provides positive evidence of actually used filaments.
+  if (file.metadata?.source === '3mf' && !file.metadata.material_detection && file.stored_name) {
+    const original = path.join(uploadsDir, path.basename(file.stored_name));
+    if (fs.existsSync(original)) {
+      const metadata = productionFileMetadata(original, file.original_name, {
+        material: file.metadata.material, color: file.metadata.color,
+        quantity: file.metadata.quantity, nozzle: file.metadata.nozzle,
+      });
+      if (metadata.material_detection === 'slice-info-v1') {
+        file.metadata = { ...file.metadata, materials: metadata.materials, material_detection: metadata.material_detection,
+          filament_grams: file.metadata.filament_grams || metadata.filament_grams };
+        save(value);
+      }
+    }
+  }
   const snapshots = await managedPrinterSnapshots(value);
   const candidates = snapshots.filter((printer) => printerSupportsProductionFile(printer, file)).map((printer) => {
     const material = productionFileMaterialReadiness(value, printer, file);
