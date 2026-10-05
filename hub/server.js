@@ -1227,6 +1227,20 @@ async function bambuLocalReport(printer) {
     } catch { finish(null); }
   });
 }
+async function bambuCommand(printer, param) {
+  const mqtt = mqttLibrary(); const host = printerHost(printer); const serial = clean(printer.serial_number, 160); const accessCode = clean(printer.api_key, 200);
+  if (!mqtt || !host || !serial || !accessCode) throw new Error('Faltam IP, número de série ou código LAN.');
+  return new Promise((resolve, reject) => {
+    let connection; let settled = false; const sequenceId = String(Date.now());
+    const finish = (error, result) => { if (settled) return; settled = true; clearTimeout(timeout); try { connection?.end(true); } catch {} error ? reject(error) : resolve(result); };
+    const timeout = setTimeout(() => finish(new Error('A Bambu não confirmou o comando. Confirma LAN Mode e Developer Mode.')), 5000);
+    connection = mqtt.connect(`mqtts://${host}:8883`, { username:'bblp', password:accessCode, rejectUnauthorized:false, reconnectPeriod:0, connectTimeout:4000, clean:true, clientId:`c3dcmd_${crypto.randomBytes(5).toString('hex')}` });
+    const reportTopic = `device/${serial}/report`; const requestTopic = `device/${serial}/request`;
+    connection.once('connect', () => connection.subscribe(reportTopic, (error) => { if (error) return finish(error); connection.publish(requestTopic, JSON.stringify({ print:{ sequence_id:sequenceId, command:'gcode_line', param } })); }));
+    connection.on('message', (topic, payload) => { if (topic !== reportTopic) return; try { const ack = JSON.parse(payload.toString('utf8'))?.print; if (String(ack?.sequence_id) !== sequenceId || ack?.result === undefined) return; const ok = String(ack.result).toLowerCase() === 'success'; finish(ok ? null : new Error(ack.reason || 'Comando recusado pela Bambu'), ack); } catch {} });
+    connection.once('error', (error) => finish(error));
+  });
+}
 function printerMaterialProfile(value, printer, reportedSlots = []) {
   const configuredSystem = normalizeMaterialSystem(printer.material_system || inferMaterialSystem(printer));
   const automaticAms = reportedSlots.some((slot) => integerIndex(slot?.ams_unit) !== null && integerIndex(slot?.ams_slot) !== null);
@@ -1300,6 +1314,9 @@ async function directPrinterStatus(printer, value) {
           job_name: clean(print.gcode_file || print.subtask_name || print.task_name, 255) || null,
           job_progress: Number(print.mc_percent ?? print.progress ?? 0),
           job_time_remaining: Number(print.mc_remaining_time ?? print.remaining_time) || null,
+          temperatures: { nozzle: { actual: Number(print.nozzle_temper || 0), target: Number(print.nozzle_target_temper || 0) }, bed: { actual: Number(print.bed_temper || 0), target: Number(print.bed_target_temper || 0) } },
+          alerts: [ ...(Array.isArray(print.hms) ? print.hms.map((item) => ({ type:'HMS', code:String(item.code ?? ''), attr:String(item.attr ?? '') })) : []), ...(Number(print.print_error || 0) ? [{ type:'PRINT_ERROR', code:String(print.print_error) }] : []) ],
+          developer_mode: !(Number(print.fun || 0) & (1 << 29)),
           material_profile: printerMaterialProfile(value, printerWithAms, reportedSlots),
           checked_at: new Date().toISOString(),
         };
