@@ -1777,6 +1777,28 @@ async function displayStatus() {
   };
 }
 
+function alarmKey(parts) { return crypto.createHash('sha1').update(parts.map((part)=>String(part ?? '')).join('|')).digest('hex').slice(0,16); }
+function normalizedFarmAlarms(saved, printers, stockItems) {
+  const current=[];
+  for (const printer of printers) {
+    const state=String(printer.status||'UNKNOWN').toUpperCase();
+    if (state==='OFFLINE') current.push({key:alarmKey(['printer',printer.id,'offline']),severity:'critical',source:'printer',printer_id:printer.id,title:printer.name,message:'Impressora offline'});
+    else if (!['ONLINE','IDLE','PRINTING','PAUSED','FINISHED','COMPLETE','COMPLETED'].includes(state)) current.push({key:alarmKey(['printer',printer.id,'state',state]),severity:'warning',source:'printer',printer_id:printer.id,title:printer.name,message:`Estado: ${state}`});
+    for (const fault of printer.alerts||[]) current.push({key:alarmKey(['printer',printer.id,fault.type,fault.code]),severity:'critical',source:'machine',printer_id:printer.id,title:printer.name,message:`${fault.type||'Erro'} ${fault.code||''}`.trim()});
+  }
+  for (const stock of stockItems) if (Number(stock.remaining_weight||0)>0 && Number(stock.remaining_weight||0)<200) current.push({key:alarmKey(['stock',stock.id||stock.material,stock.color]),severity:'warning',source:'stock',title:`${stock.material||'Material'}${stock.color?` · ${stock.color}`:''}`,message:`Stock baixo: ${Math.round(Number(stock.remaining_weight))} g`});
+  saved.alarm_history=Array.isArray(saved.alarm_history)?saved.alarm_history:[];
+  const now=new Date().toISOString(); const activeKeys=new Set(current.map((alarm)=>alarm.key)); let changed=false;
+  for (const alarm of current) {
+    let item=saved.alarm_history.find((entry)=>entry.key===alarm.key && entry.status!=='resolved');
+    if (!item) { item={id:crypto.randomUUID(),...alarm,status:'active',first_seen:now,last_seen:now,acknowledged_at:null,resolved_at:null}; saved.alarm_history.unshift(item); changed=true; }
+    else { item.last_seen=now; item.severity=alarm.severity; item.title=alarm.title; item.message=alarm.message; }
+  }
+  for (const item of saved.alarm_history) if (item.status!=='resolved' && !activeKeys.has(item.key)) { item.status='resolved'; item.resolved_at=now; changed=true; }
+  if (saved.alarm_history.length>250) { saved.alarm_history=saved.alarm_history.slice(0,250); changed=true; }
+  if (changed) save(saved);
+  return saved.alarm_history;
+}
 app.get('/api/summary', async (_req, res) => {
   const saved = state(); const printerItems = await managedPrinterSnapshots(saved); const spoolItems = saved.spools.map(localSpool);
   const stockItems = materialStock(spoolItems);
@@ -1784,7 +1806,20 @@ app.get('/api/summary', async (_req, res) => {
   const orders = [...saved.orders].sort((a, b) => Number(b.priority) - Number(a.priority) || String(a.due_date || '9999').localeCompare(String(b.due_date || '9999')));
   const projects = [...saved.projects].sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || Number(b.id) - Number(a.id));
   const jobs = [...saved.jobs].map((job) => ({ ...job, part_name: getManagedPart(saved, job.part_id)?.name || null, printer_name: getManagedPrinter(saved, job.printer_id)?.name || null }));
-  res.json({ generatedAt: new Date().toISOString(), services: { productionHub: true }, system: { hostname: os.hostname(), uptime_seconds: os.uptime(), memory_total_mb: Math.round(os.totalmem() / 1048576), memory_used_mb: Math.round((os.totalmem() - os.freemem()) / 1048576), cpu_load_1m: Number(os.loadavg()[0].toFixed(2)) }, printers: { total: printerItems.length, online: printerItems.filter((item) => online.has(String(item.status || '').toUpperCase())).length, printing: printerItems.filter((item) => String(item.status || '').toUpperCase() === 'PRINTING').length, items: printerItems }, spools: { total: stockItems.length, low: stockItems.filter((item) => Number(item.remaining_weight || 0) > 0 && Number(item.remaining_weight || 0) < 200).length, items: spoolItems, stock: stockItems }, production: { projects, jobs, orders }, assignments: saved.assignments, consumption: saved.consumption.slice(0, 20) });
+  const alarmHistory=normalizedFarmAlarms(saved,printerItems,stockItems); const activeAlarms=alarmHistory.filter((alarm)=>alarm.status!=='resolved');
+  res.json({ generatedAt: new Date().toISOString(), alarms:{active:activeAlarms,history:alarmHistory.slice(0,50)}, services: { productionHub: true }, system: { hostname: os.hostname(), uptime_seconds: os.uptime(), memory_total_mb: Math.round(os.totalmem() / 1048576), memory_used_mb: Math.round((os.totalmem() - os.freemem()) / 1048576), cpu_load_1m: Number(os.loadavg()[0].toFixed(2)) }, printers: { total: printerItems.length, online: printerItems.filter((item) => online.has(String(item.status || '').toUpperCase())).length, printing: printerItems.filter((item) => String(item.status || '').toUpperCase() === 'PRINTING').length, items: printerItems }, spools: { total: stockItems.length, low: stockItems.filter((item) => Number(item.remaining_weight || 0) > 0 && Number(item.remaining_weight || 0) < 200).length, items: spoolItems, stock: stockItems }, production: { projects, jobs, orders }, assignments: saved.assignments, consumption: saved.consumption.slice(0, 20) });
+});
+
+app.post('/api/alarms/:id/acknowledge', (req,res) => {
+  const saved=state(); saved.alarm_history=Array.isArray(saved.alarm_history)?saved.alarm_history:[]; const alarm=saved.alarm_history.find((item)=>item.id===req.params.id);
+  if(!alarm) return res.status(404).json({error:'Alarme não encontrado.'});
+  if(alarm.status==='resolved') return res.status(409).json({error:'Este alarme já está resolvido.'});
+  alarm.status='acknowledged'; alarm.acknowledged_at=new Date().toISOString(); save(saved); return res.json({ok:true,alarm});
+});
+app.post('/api/alarms/:id/resolve', (req,res) => {
+  const saved=state(); saved.alarm_history=Array.isArray(saved.alarm_history)?saved.alarm_history:[]; const alarm=saved.alarm_history.find((item)=>item.id===req.params.id);
+  if(!alarm) return res.status(404).json({error:'Alarme não encontrado.'});
+  alarm.status='resolved'; alarm.resolved_at=new Date().toISOString(); save(saved); return res.json({ok:true,alarm});
 });
 
 app.get('/api/display/status', async (req, res) => {
