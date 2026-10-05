@@ -2259,6 +2259,55 @@ app.delete('/api/printers/:id', (req, res) => {
   saved.jobs = saved.jobs.filter((job) => Number(job.printer_id) !== Number(printer.id));
   save(saved); res.status(204).end();
 });
+async function klipperGcode(printer, script) {
+  const url = printerEndpoint(printer, '/printer/gcode/script', 7125);
+  const headers = printer.api_key ? { 'X-Api-Key': printer.api_key } : {};
+  return client.post(url, null, { timeout: 5000, headers, params: { script } });
+}
+app.get('/api/printers/:id/control-status', async (req, res) => {
+  const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
+  if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
+  if (printer.type !== 'klipper') return res.status(409).json({ error: 'O controlo manual ainda não está disponível para este tipo de impressora.' });
+  try {
+    const response = await client.get(printerEndpoint(printer, '/printer/objects/query?extruder&heater_bed&toolhead&print_stats', 7125), { timeout: 4000, headers: printer.api_key ? { 'X-Api-Key': printer.api_key } : {} });
+    const status = response.data?.result?.status || {};
+    res.json({
+      state: canonicalState(status.print_stats?.state),
+      position: status.toolhead?.position || null,
+      nozzle: { actual: Number(status.extruder?.temperature || 0), target: Number(status.extruder?.target || 0) },
+      bed: { actual: Number(status.heater_bed?.temperature || 0), target: Number(status.heater_bed?.target || 0) },
+    });
+  } catch (error) { res.status(502).json({ error: `Não foi possível ler os controlos da impressora: ${error.message || 'erro de ligação'}` }); }
+});
+app.post('/api/printers/:id/control', async (req, res) => {
+  const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
+  if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
+  if (printer.type !== 'klipper') return res.status(409).json({ error: 'O controlo manual ainda não está disponível para este tipo de impressora.' });
+  const action = clean(req.body?.action, 30).toLowerCase();
+  try {
+    if (action === 'move') {
+      const snapshot = await directPrinterStatus(printer, saved);
+      if (['PRINTING', 'PAUSED'].includes(snapshot.status)) return res.status(409).json({ error: 'Movimento manual bloqueado durante uma impressão.' });
+      const axis = clean(req.body?.axis, 1).toUpperCase();
+      const distance = Number(req.body?.distance);
+      if (!['X', 'Y', 'Z'].includes(axis) || !Number.isFinite(distance) || distance === 0 || Math.abs(distance) > 100) return res.status(400).json({ error: 'Movimento inválido. O limite por comando é 100 mm.' });
+      const speed = axis === 'Z' ? 600 : 6000;
+      await klipperGcode(printer, `G91\nG1 ${axis}${distance.toFixed(3)} F${speed}\nG90`);
+    } else if (action === 'home') {
+      const axis = clean(req.body?.axis, 3).toUpperCase();
+      if (!['ALL', 'X', 'Y', 'Z'].includes(axis)) return res.status(400).json({ error: 'Eixo de homing inválido.' });
+      await klipperGcode(printer, axis === 'ALL' ? 'G28' : `G28 ${axis}`);
+    } else if (action === 'temperature') {
+      const heater = clean(req.body?.heater, 12).toLowerCase();
+      const target = Number(req.body?.target);
+      const max = heater === 'nozzle' ? 350 : heater === 'bed' ? 150 : 0;
+      if (!max || !Number.isFinite(target) || target < 0 || target > max) return res.status(400).json({ error: 'Temperatura fora dos limites permitidos.' });
+      await klipperGcode(printer, heater === 'nozzle' ? `M104 S${Math.round(target)}` : `M140 S${Math.round(target)}`);
+    } else return res.status(400).json({ error: 'Comando de controlo desconhecido.' });
+    res.json({ ok: true });
+  } catch (error) { res.status(502).json({ error: `A impressora recusou o comando: ${error.response?.data?.error?.message || error.message || 'erro de ligação'}` }); }
+});
+
 app.get('/api/printers/:id/materials', async (req, res) => {
   const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
   if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
