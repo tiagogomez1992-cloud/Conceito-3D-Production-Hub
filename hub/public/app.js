@@ -1,4 +1,5 @@
 const $ = (id) => document.getElementById(id);
+const UI_REVISION = 'route-refresh-v3';
 let latest = { printers: [], spools: [], stock: [], assignments: {}, orders: [] };
 let farmFilter = 'all';
 let customers = [];
@@ -1278,6 +1279,7 @@ function renderOverviewFromCurrent() {
   }
 }
 
+document.documentElement.dataset.uiRevision=UI_REVISION;
 setupOverviewLayout();
 setupProjectWorkspace();
 setupPrinterWorkspace();
