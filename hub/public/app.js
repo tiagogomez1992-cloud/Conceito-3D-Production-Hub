@@ -424,7 +424,7 @@ function resetTemplateForm() {
 async function populateFilaments() { return []; }
 async function refreshCustomers() { try { customers = await api('/api/customers'); renderCustomers(); } catch { $('customer-grid').innerHTML = '<p class="empty">Não foi possível carregar os clientes.</p>'; } }
 async function refreshFiles() { try { libraryParts = await api('/api/library-parts'); libraryFiles = libraryParts.flatMap((part) => part.gcodes || []); renderFiles(); const fileInput = $('quick-dispatch-file'); if (fileInput && !fileInput.value) fileInput.innerHTML = quickDispatchFileOptions(); const profileOptions = $('quick-dispatch-model-options'); if (profileOptions) profileOptions.innerHTML = quickDispatchProfileOptions(); if (latest.orders.length) { renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); } } catch { $('file-grid').innerHTML = '<p class="empty">Não foi possível carregar a biblioteca.</p>'; } }
-async function update() { $('refresh').disabled = true; try { const data = await api('/api/summary'); latest = { printers: data.printers.items, spools: data.spools.items, stock: data.spools.stock || [], assignments: data.assignments || {}, orders: data.production.orders || [] }; $('printers-total').textContent = data.printers.total; $('printers-online').textContent = `${data.printers.online} online`; $('printers-printing').textContent = data.printers.printing; $('spools-total').textContent = data.spools.total; $('spools-low').textContent = data.spools.low ? `${data.spools.low} abaixo de 200 g` : 'Sem alertas'; $('live-dot').className = data.services.productionHub ? 'connected' : 'warning'; $('last-update').textContent = `Atualizado às ${new Date(data.generatedAt).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })}`; $('system-host').textContent = data.system.hostname; $('system-up').textContent = `${Math.floor(data.system.uptime_seconds / 3600)} h ativo`; $('system-memory').textContent = `${data.system.memory_used_mb} MB`; $('system-load').textContent = data.system.cpu_load_1m; renderPrinters(latest.printers); renderSpools(); renderProduction(data.production.projects, data.production.jobs); renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); refreshLibraryFilePickers(); } catch { $('last-update').textContent = 'Não foi possível contactar os serviços'; $('live-dot').className = 'warning'; } finally { $('refresh').disabled = false; } }
+async function update() { $('refresh').disabled = true; try { const data = await api('/api/summary'); latest = { printers: data.printers.items, spools: data.spools.items, stock: data.spools.stock || [], assignments: data.assignments || {}, orders: data.production.orders || [], alarms: data.alarms || { active:[], history:[] } }; $('printers-total').textContent = data.printers.total; $('printers-online').textContent = `${data.printers.online} online`; $('printers-printing').textContent = data.printers.printing; $('spools-total').textContent = data.spools.total; $('spools-low').textContent = data.spools.low ? `${data.spools.low} abaixo de 200 g` : 'Sem alertas'; $('live-dot').className = data.services.productionHub ? 'connected' : 'warning'; $('last-update').textContent = `Atualizado às ${new Date(data.generatedAt).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })}`; $('system-host').textContent = data.system.hostname; $('system-up').textContent = `${Math.floor(data.system.uptime_seconds / 3600)} h ativo`; $('system-memory').textContent = `${data.system.memory_used_mb} MB`; $('system-load').textContent = data.system.cpu_load_1m; renderPrinters(latest.printers); renderSpools(); renderProduction(data.production.projects, data.production.jobs); renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); refreshLibraryFilePickers(); } catch { $('last-update').textContent = 'Não foi possível contactar os serviços'; $('live-dot').className = 'warning'; } finally { $('refresh').disabled = false; } }
 
 $('refresh').onclick = update;
 $('discover-printers').onclick = async () => { const button = $('discover-printers'); button.disabled = true; button.textContent = 'A analisar…'; try { renderDiscovery(await api('/api/printers/discover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subnet: $('discovery-subnet').value }) })); } catch (error) { toast(error.message, 'error'); } finally { button.disabled = false; button.textContent = 'Analisar rede local'; } };
@@ -447,6 +447,15 @@ stockEditForm.id = 'stock-edit-form'; stockEditForm.className = 'inline-form sto
 stockEditForm.innerHTML = `<label>Material<input name="material" required placeholder="Ex.: PETG"></label><label>Cor<input name="color" required placeholder="Ex.: Preto"></label><label>Fabricante<input name="brand" placeholder="Opcional"></label><label>Peso da bobine selada<select name="spool_weight" required>${stockWeightOptions()}</select></label><label>N.º de bobines<input name="spool_count" type="number" min="1" max="10000" required></label><button type="submit">Guardar alterações</button><button type="button" class="secondary" data-close-form="stock-edit-form">Cancelar</button><p class="form-note">Só podes alterar ou remover um artigo que ainda não esteja associado a uma impressora nem tenha consumos registados.</p>`;
 $('spool-grid').before(stockEditForm);
 historyTab.onclick = () => { document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === historyTab)); document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view === historyView)); };
+document.addEventListener('click', async (event) => {
+  const ack=event.target.closest('[data-alarm-ack]'); const resolve=event.target.closest('[data-alarm-resolve]');
+  if(!ack&&!resolve)return;
+  event.preventDefault(); event.stopPropagation();
+  const button=ack||resolve; button.disabled=true;
+  try { await api(`/api/alarms/${ack?ack.dataset.alarmAck:resolve.dataset.alarmResolve}/${ack?'acknowledge':'resolve'}`,{method:'POST'}); await update(); renderOverviewFromCurrent(); }
+  catch(error){ alert(error.message||'Não foi possível atualizar o alarme.'); }
+  finally{ button.disabled=false; }
+});
 document.addEventListener('click', async (event) => {
   const open = event.target.closest('[data-open-form]'), close = event.target.closest('[data-close-form]');
   const openPrinterPage = event.target.closest('[data-open-printer]');
@@ -1194,17 +1203,11 @@ function overviewPrinterCard(printer) {
 }
 
 function renderAlarmCenter() {
-  const list = $('alarm-list'); const count = $('alarm-count'); if (!list || !count) return;
-  const alarms = [];
-  latest.printers.forEach((printer) => {
-    const state = statusClass(printer.status);
-    (printer.alerts || []).forEach((alert) => alarms.push({ level:'critical', title:printer.name, text:(String(alert.type || 'Erro') + ' ' + String(alert.code || '')).trim(), printer:printer.id }));
-    if (state === 'offline') alarms.push({ level:'critical', title:printer.name, text:'Impressora offline', printer:printer.id });
-    else if (state !== 'online' && state !== 'printing') alarms.push({ level:'warning', title:printer.name, text:`Estado: ${printer.status || 'desconhecido'}`, printer:printer.id });
-  });
-  latest.spools.forEach((spool) => { const info=spoolInfo(spool); if (info.remaining > 0 && info.remaining < 200) alarms.push({level:'warning',title:`${info.material} · Bobine #${spool.id}`,text:`Stock baixo: ${info.remaining} g`}); });
-  count.textContent = `${alarms.length} ${alarms.length === 1 ? 'alerta' : 'alertas'}`;
-  list.innerHTML = alarms.length ? alarms.slice(0,12).map((alarm)=>`<button type="button" class="alarm-item ${alarm.level}" ${alarm.printer ? `data-open-printer="${alarm.printer}"` : ''}><span>!</span><div><strong>${escape(alarm.title)}</strong><small>${escape(alarm.text)}</small></div></button>`).join('') : '<p class="empty overview-empty">Sem alertas ativos. A farm está operacional.</p>';
+  const list=$('alarm-list'); const count=$('alarm-count'); if(!list||!count)return;
+  const alarms=latest.alarms?.active||[];
+  const critical=alarms.filter((alarm)=>alarm.severity==='critical').length;
+  count.textContent=alarms.length ? `${alarms.length} ${alarms.length===1?'alerta':'alertas'}${critical?` · ${critical} críticos`:''}` : '0 alertas';
+  list.innerHTML=alarms.length ? alarms.slice(0,12).map((alarm)=>`<div class="alarm-item ${alarm.severity} ${alarm.status==='acknowledged'?'acknowledged':''}"><button type="button" class="alarm-open" ${alarm.printer_id?`data-open-printer="${alarm.printer_id}"`:''}><span>!</span><div><strong>${escape(alarm.title)}</strong><small>${escape(alarm.message)}</small></div></button><div class="alarm-actions">${alarm.status==='active'?`<button type="button" data-alarm-ack="${alarm.id}">Reconhecer</button>`:''}<button type="button" data-alarm-resolve="${alarm.id}">Resolver</button></div></div>`).join('') : '<p class="empty overview-empty">Sem alertas ativos. A farm está operacional.</p>';
 }
 function renderCameraWall() {
   const grid=$('camera-wall-grid'); if(!grid) return;
