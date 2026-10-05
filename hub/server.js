@@ -1227,6 +1227,20 @@ async function bambuLocalReport(printer) {
     } catch { finish(null); }
   });
 }
+async function bambuCommand(printer, param) {
+  const mqtt = mqttLibrary(); const host = printerHost(printer); const serial = clean(printer.serial_number, 160); const accessCode = clean(printer.api_key, 200);
+  if (!mqtt || !host || !serial || !accessCode) throw new Error('Faltam IP, número de série ou código LAN.');
+  return new Promise((resolve, reject) => {
+    let connection; let settled = false; const sequenceId = String(Date.now());
+    const finish = (error, result) => { if (settled) return; settled = true; clearTimeout(timeout); try { connection?.end(true); } catch {} error ? reject(error) : resolve(result); };
+    const timeout = setTimeout(() => finish(new Error('A Bambu não confirmou o comando. Confirma LAN Mode e Developer Mode.')), 5000);
+    connection = mqtt.connect(`mqtts://${host}:8883`, { username:'bblp', password:accessCode, rejectUnauthorized:false, reconnectPeriod:0, connectTimeout:4000, clean:true, clientId:`c3dcmd_${crypto.randomBytes(5).toString('hex')}` });
+    const reportTopic = `device/${serial}/report`; const requestTopic = `device/${serial}/request`;
+    connection.once('connect', () => connection.subscribe(reportTopic, (error) => { if (error) return finish(error); connection.publish(requestTopic, JSON.stringify({ print:{ sequence_id:sequenceId, command:'gcode_line', param } })); }));
+    connection.on('message', (topic, payload) => { if (topic !== reportTopic) return; try { const ack = JSON.parse(payload.toString('utf8'))?.print; if (String(ack?.sequence_id) !== sequenceId || ack?.result === undefined) return; const ok = String(ack.result).toLowerCase() === 'success'; finish(ok ? null : new Error(ack.reason || 'Comando recusado pela Bambu'), ack); } catch {} });
+    connection.once('error', (error) => finish(error));
+  });
+}
 function printerMaterialProfile(value, printer, reportedSlots = []) {
   const configuredSystem = normalizeMaterialSystem(printer.material_system || inferMaterialSystem(printer));
   const automaticAms = reportedSlots.some((slot) => integerIndex(slot?.ams_unit) !== null && integerIndex(slot?.ams_slot) !== null);
@@ -1300,6 +1314,9 @@ async function directPrinterStatus(printer, value) {
           job_name: clean(print.gcode_file || print.subtask_name || print.task_name, 255) || null,
           job_progress: Number(print.mc_percent ?? print.progress ?? 0),
           job_time_remaining: Number(print.mc_remaining_time ?? print.remaining_time) || null,
+          temperatures: { nozzle: { actual: Number(print.nozzle_temper || 0), target: Number(print.nozzle_target_temper || 0) }, bed: { actual: Number(print.bed_temper || 0), target: Number(print.bed_target_temper || 0) } },
+          alerts: [ ...(Array.isArray(print.hms) ? print.hms.map((item) => ({ type:'HMS', code:String(item.code ?? ''), attr:String(item.attr ?? '') })) : []), ...(Number(print.print_error || 0) ? [{ type:'PRINT_ERROR', code:String(print.print_error) }] : []) ],
+          developer_mode: !(Number(print.fun || 0) & (1 << 29)),
           material_profile: printerMaterialProfile(value, printerWithAms, reportedSlots),
           checked_at: new Date().toISOString(),
         };
@@ -2267,8 +2284,13 @@ async function klipperGcode(printer, script) {
 app.get('/api/printers/:id/control-status', async (req, res) => {
   const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
   if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
-  if (printer.type !== 'klipper') return res.status(409).json({ error: 'O controlo manual ainda não está disponível para este tipo de impressora.' });
+  if (!['klipper', 'bambu'].includes(printer.type)) return res.status(409).json({ error: 'O controlo manual ainda não está disponível para este tipo de impressora.' });
   try {
+    if (printer.type === 'bambu') {
+      const telemetry = await bambuLocalReport(printer); const print = telemetry?.print;
+      if (!print) return res.status(502).json({ error: 'Sem telemetria Bambu.' });
+      return res.json({ state: canonicalState(print.gcode_state), position: null, developer_mode: !(Number(print.fun || 0) & (1 << 29)), nozzle: { actual:Number(print.nozzle_temper || 0), target:Number(print.nozzle_target_temper || 0) }, bed: { actual:Number(print.bed_temper || 0), target:Number(print.bed_target_temper || 0) }, alerts:Array.isArray(print.hms) ? print.hms : [] });
+    }
     const response = await client.get(printerEndpoint(printer, '/printer/objects/query?extruder&heater_bed&toolhead&print_stats', 7125), { timeout: 4000, headers: printer.api_key ? { 'X-Api-Key': printer.api_key } : {} });
     const status = response.data?.result?.status || {};
     res.json({
@@ -2282,7 +2304,7 @@ app.get('/api/printers/:id/control-status', async (req, res) => {
 app.post('/api/printers/:id/control', async (req, res) => {
   const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
   if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
-  if (printer.type !== 'klipper') return res.status(409).json({ error: 'O controlo manual ainda não está disponível para este tipo de impressora.' });
+  if (!['klipper', 'bambu'].includes(printer.type)) return res.status(409).json({ error: 'O controlo manual ainda não está disponível para este tipo de impressora.' });
   const action = clean(req.body?.action, 30).toLowerCase();
   try {
     if (action === 'move') {
@@ -2292,17 +2314,20 @@ app.post('/api/printers/:id/control', async (req, res) => {
       const distance = Number(req.body?.distance);
       if (!['X', 'Y', 'Z'].includes(axis) || !Number.isFinite(distance) || distance === 0 || Math.abs(distance) > 100) return res.status(400).json({ error: 'Movimento inválido. O limite por comando é 100 mm.' });
       const speed = axis === 'Z' ? 600 : 6000;
-      await klipperGcode(printer, `G91\nG1 ${axis}${distance.toFixed(3)} F${speed}\nG90`);
+      const script = `G91\nG1 ${axis}${distance.toFixed(3)} F${speed}\nG90`;
+      if (printer.type === 'bambu') await bambuCommand(printer, script); else await klipperGcode(printer, script);
     } else if (action === 'home') {
       const axis = clean(req.body?.axis, 3).toUpperCase();
       if (!['ALL', 'X', 'Y', 'Z'].includes(axis)) return res.status(400).json({ error: 'Eixo de homing inválido.' });
-      await klipperGcode(printer, axis === 'ALL' ? 'G28' : `G28 ${axis}`);
+      const script = axis === 'ALL' ? 'G28' : `G28 ${axis}`;
+      if (printer.type === 'bambu') await bambuCommand(printer, script); else await klipperGcode(printer, script);
     } else if (action === 'temperature') {
       const heater = clean(req.body?.heater, 12).toLowerCase();
       const target = Number(req.body?.target);
       const max = heater === 'nozzle' ? 350 : heater === 'bed' ? 150 : 0;
       if (!max || !Number.isFinite(target) || target < 0 || target > max) return res.status(400).json({ error: 'Temperatura fora dos limites permitidos.' });
-      await klipperGcode(printer, heater === 'nozzle' ? `M104 S${Math.round(target)}` : `M140 S${Math.round(target)}`);
+      const script = heater === 'nozzle' ? `M104 S${Math.round(target)}` : `M140 S${Math.round(target)}`;
+      if (printer.type === 'bambu') await bambuCommand(printer, script); else await klipperGcode(printer, script);
     } else return res.status(400).json({ error: 'Comando de controlo desconhecido.' });
     res.json({ ok: true });
   } catch (error) { res.status(502).json({ error: `A impressora recusou o comando: ${error.response?.data?.error?.message || error.message || 'erro de ligação'}` }); }
