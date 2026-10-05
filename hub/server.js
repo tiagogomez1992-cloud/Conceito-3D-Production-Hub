@@ -2897,7 +2897,16 @@ app.post('/api/consume', (req, res) => {
 
 app.use((error, _req, res, _next) => res.status(400).json({ error: error.message || 'Não foi possível processar o ficheiro.' }));
 app.use('/uploads', express.static(uploadsDir));
-app.use(express.static(path.join(__dirname, 'public')));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '0.5.0' }));
-app.get(/.*/, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  etag: false,
+  lastModified: false,
+  setHeaders: (res, filePath) => {
+    if (/\.(?:js|css|html)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  },
+}));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '0.5.0', ui_revision: 'route-refresh-v3' }));
+app.get(/.*/, (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 app.listen(port, () => console.log(`Conceito 3D Production Hub listening on ${port}`));
