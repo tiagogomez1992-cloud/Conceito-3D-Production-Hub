@@ -1217,3 +1217,5 @@ body.printer-editor-page .printer-workspace { margin-top:7px; }
 @media(max-width:760px){.farm-toolbar{align-items:flex-start;flex-direction:column}.camera-wall-grid{grid-template-columns:1fr}.alarm-list{grid-template-columns:1fr}}
 
 .overview-quick-actions{display:flex;gap:8px;margin-top:10px}.overview-quick-actions button,.alarm-actions button{border:1px solid var(--line,#d9dee7);background:transparent;border-radius:8px;padding:6px 9px;font:inherit;cursor:pointer}.alarm-item{display:flex;align-items:center;justify-content:space-between;gap:10px}.alarm-open{display:flex;align-items:center;gap:10px;flex:1;text-align:left;background:none;border:0;color:inherit}.alarm-actions{display:flex;gap:6px;flex-wrap:wrap}.alarm-item.acknowledged{opacity:.72}
+
+.smart-route-row{grid-template-columns:minmax(100px,.7fr) minmax(150px,1.2fr) minmax(220px,1.6fr) auto}.smart-route-approve{grid-column:2/-1;justify-self:start;border:1px solid var(--line,#d9dee7);background:transparent;border-radius:8px;padding:6px 10px;font:inherit;cursor:pointer}
