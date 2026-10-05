@@ -1283,6 +1283,7 @@ async function refreshPrinterControls() {
     if (bed) bed.textContent = `${Math.round(status.bed.actual)} / ${Math.round(status.bed.target)} °C`;
     const warning = panel.querySelector('.control-warning'); if (warning && status.developer_mode === false) warning.textContent = 'Bambu: monitorização disponível. Para comandos LAN, ativa Developer Mode na impressora.';
     if (warning && status.backend === 'moonraker') warning.textContent = 'Anycubic via Moonraker/Rinkhals: controlo completo disponível.';
+    if (warning && status.backend === 'anycubic-stock') warning.textContent = status.total_layer ? `Anycubic Stock LAN · Layer ${status.layer || 0}/${status.total_layer} · controlo local ativo.` : 'Anycubic Stock LAN · controlo local ativo.';
   } catch { /* Main status refresh already reports connectivity. */ }
 }
 document.addEventListener('click', async (event) => {
