@@ -1277,6 +1277,80 @@ function spoolForRequiredMaterial(value, printer, requiredMaterial, requiredColo
   const matchingSlot = profile.slots.find((slot) => slot.spool_id && materialIsCompatible(slot, requiredMaterial, requiredColor));
   return matchingSlot?.spool_id ? value.spools.find((spool) => Number(spool.id) === Number(matchingSlot.spool_id)) || null : null;
 }
+
+const anycubicStockCache = new Map();
+function md5Hex(value) { return crypto.createHash('md5').update(String(value)).digest('hex'); }
+function anycubicFlatten(value, out = {}) {
+  if (!value || typeof value !== 'object') return out;
+  for (const [key, item] of Object.entries(value)) {
+    if (item && typeof item === 'object' && !Array.isArray(item)) anycubicFlatten(item, out);
+    else if (!(key in out)) out[key] = item;
+  }
+  return out;
+}
+function anycubicFirst(flat, keys, fallback = null) {
+  for (const key of keys) if (flat[key] !== undefined && flat[key] !== null) return flat[key];
+  return fallback;
+}
+async function anycubicStockCredentials(printer) {
+  const host = printerHost(printer);
+  const infoResponse = await client.get(\`http://\${host}:18910/info\`, { timeout: 4000 });
+  const info = infoResponse.data?.data || infoResponse.data;
+  const token = String(info?.token || '');
+  if (token.length < 32 || !info?.ctrlInfoUrl) throw new Error('Resposta LAN Anycubic inválida.');
+  const ts = String(Date.now());
+  const nonce = crypto.randomBytes(6).toString('base64url').slice(0, 6);
+  const sign = md5Hex(md5Hex(token.slice(0, 16)) + ts + nonce);
+  const ctrlResponse = await client.post(info.ctrlInfoUrl, null, { timeout: 5000, params: { ts, nonce, sign, did: crypto.randomUUID().replace(/-/g, '').toUpperCase() } });
+  const ctrl = ctrlResponse.data;
+  if (Number(ctrl?.code) !== 200 || !ctrl?.data?.info || !ctrl?.data?.token) throw new Error(\`Handshake Anycubic recusado (code \${ctrl?.code ?? '?'})\`);
+  const key = Buffer.from(token.slice(16, 32)); const iv = Buffer.from(String(ctrl.data.token));
+  const decipher = crypto.createDecipheriv('aes-128-cbc', key, iv);
+  const decrypted = Buffer.concat([decipher.update(Buffer.from(ctrl.data.info, 'base64')), decipher.final()]).toString('utf8');
+  const bundle = JSON.parse(decrypted);
+  return { host, info, typeId: Number(bundle.modelId || bundle.modeId || info.modelId), printerId: String(bundle.deviceId), username: String(bundle.username), password: String(bundle.password), cert: String(bundle.devicecrt || '').replace(/\\n/g, '\n'), key: String(bundle.devicepk || '').replace(/\\n/g, '\n') };
+}
+function anycubicPayload(type, action, data = null) { return { type, action, timestamp: Date.now(), msgid: crypto.randomUUID(), data }; }
+async function anycubicStockSession(printer, commands = []) {
+  const cacheKey = printerHost(printer); const cached = anycubicStockCache.get(cacheKey);
+  if (!commands.length && cached && Date.now() - cached.received_at < 7000) return cached.state;
+  const credentials = await anycubicStockCredentials(printer);
+  const mqtt = mqttLibrary(); if (!mqtt) throw new Error('Biblioteca MQTT indisponível.');
+  return new Promise((resolve, reject) => {
+    let connection; let settled = false; const state = {};
+    const finish = (error) => { if (settled) return; settled = true; clearTimeout(timer); try { connection?.end(true); } catch {} if (error) reject(error); else { if (!commands.length) anycubicStockCache.set(cacheKey, { received_at:Date.now(), state }); resolve(state); } };
+    const timer = setTimeout(() => finish(commands.length ? null : new Error('Sem resposta MQTT da Kobra X.')), commands.length ? 1200 : 3500);
+    try {
+      connection = mqtt.connect(\`mqtts://\${credentials.host}:9883\`, { username:credentials.username, password:credentials.password, cert:credentials.cert, key:credentials.key, rejectUnauthorized:false, reconnectPeriod:0, connectTimeout:4000, clean:true, clientId:\`c3dkx_\${crypto.randomBytes(5).toString('hex')}\` });
+      const base = \`anycubic/anycubicCloud/v1\`; const web = \`\${base}/web/printer/\${credentials.typeId}/\${credentials.printerId}\`;
+      connection.once('connect', () => {
+        connection.subscribe(\`\${base}/printer/+/+/\${credentials.printerId}/#\`);
+        connection.subscribe(\`\${base}/printer/public/\${credentials.typeId}/\${credentials.printerId}/#\`);
+        if (commands.length) {
+          for (const command of commands) connection.publish(\`\${web}/\${command.type}\`, JSON.stringify(anycubicPayload(command.type, command.action, command.data)));
+          setTimeout(() => finish(), 450);
+          return;
+        }
+        for (const [type, action] of [['status','query'],['info','query'],['tempature','query'],['fan','query'],['peripherie','query'],['multiColorBox','getInfo']]) connection.publish(\`\${web}/\${type}\`, JSON.stringify(anycubicPayload(type, action)));
+      });
+      connection.on('message', (_topic, payload) => { try { const parsed = JSON.parse(payload.toString('utf8')); Object.assign(state, anycubicFlatten(parsed)); } catch {} });
+      connection.once('error', finish);
+    } catch (error) { finish(error); }
+  });
+}
+function anycubicStockNormalized(raw) {
+  const n = (keys) => Number(anycubicFirst(raw, keys, 0)) || 0;
+  return {
+    status: canonicalState(anycubicFirst(raw, ['printState','print_state','printStatus','taskStatus','jobState','workState','state'], 'ONLINE')),
+    job_name: clean(anycubicFirst(raw, ['filename','fileName','file_name','taskName','task_name','printName'], ''), 255) || null,
+    job_progress: n(['progress','printProgress','taskProgress','taskPercent','percent','completion']),
+    job_time_remaining: n(['remain_time','remainingTime','remainTime','timeRemaining','leftTime']) || null,
+    temperatures: { nozzle:{ actual:n(['curr_nozzle_temp','nozzleTemp','nozzleTemperature','currentNozzleTemp']), target:n(['target_nozzle_temp','targetNozzleTemp','nozzleTargetTemp']) }, bed:{ actual:n(['curr_hotbed_temp','curr_bed_temp','bedTemp','bedTemperature','currentBedTemp']), target:n(['target_hotbed_temp','target_bed_temp','targetBedTemp','bedTargetTemp']) } },
+    layer: n(['curr_layer','layer','currentLayer','currLayer']), total_layer:n(['total_layers','totalLayer','totalLayers','layerCount']),
+    error_code: anycubicFirst(raw, ['printer_event_code','printerEventCode','errorCode','code'], null),
+  };
+}
+
 async function anycubicMoonrakerAvailable(printer) {
   try {
     const response = await client.get(`http://${printerHost(printer)}:7125/server/info`, { timeout: 1800 });
@@ -1318,8 +1392,8 @@ async function directPrinterStatus(printer, value) {
         const reportedSlots = await moonrakerReportedMaterialSlots({ ...printer, url:`http://${printerHost(printer)}:7125` });
         return { ...printer, control_backend:'moonraker', status:canonicalState(moon.stats.state), job_name:moon.stats.filename || null, job_progress:Number(moon.virtualSd.progress || 0), job_time_remaining:null, temperatures:{ nozzle:{actual:Number(moon.status.extruder?.temperature || 0),target:Number(moon.status.extruder?.target || 0)}, bed:{actual:Number(moon.status.heater_bed?.temperature || 0),target:Number(moon.status.heater_bed?.target || 0)} }, material_profile:printerMaterialProfile(value,printer,reportedSlots), checked_at:new Date().toISOString() };
       }
-      const info = await client.get(printerEndpoint(printer, '/info', 18910), { timeout:3500 });
-      return { ...printer, control_backend:'anycubic-stock', status:'ONLINE', job_name:null, job_progress:0, job_time_remaining:null, anycubic_info:info.data?.data || info.data || null, material_profile:localProfile(), checked_at:new Date().toISOString() };
+      const raw = await anycubicStockSession(printer); const stock = anycubicStockNormalized(raw);
+      return { ...printer, control_backend:'anycubic-stock', ...stock, alerts:stock.error_code && Number(stock.error_code) !== 0 ? [{type:'ANYCUBIC',code:String(stock.error_code)}] : [], material_profile:localProfile(), checked_at:new Date().toISOString() };
     }
     if (printer.type === 'bambu') {
       const telemetry = await bambuLocalReport(printer);
@@ -2306,7 +2380,10 @@ app.get('/api/printers/:id/control-status', async (req, res) => {
   if (!['klipper', 'bambu', 'anycubic'].includes(printer.type)) return res.status(409).json({ error: 'O controlo manual ainda não está disponível para este tipo de impressora.' });
   try {
     if (printer.type === 'anycubic') {
-      if (!(await anycubicMoonrakerAvailable(printer))) return res.status(409).json({ error:'Anycubic stock detetada. O controlo XYZ/preheat requer Moonraker/Rinkhals; a integração stock será apenas de telemetria e comandos suportados.' });
+      if (!(await anycubicMoonrakerAvailable(printer))) {
+        const stock=anycubicStockNormalized(await anycubicStockSession(printer));
+        return res.json({ state:stock.status, position:null, backend:'anycubic-stock', nozzle:stock.temperatures.nozzle, bed:stock.temperatures.bed, layer:stock.layer, total_layer:stock.total_layer });
+      }
       const moon=await anycubicMoonrakerStatus(printer); const st=moon.status;
       return res.json({ state:canonicalState(moon.stats.state), position:st.toolhead?.position || null, backend:'moonraker', nozzle:{actual:Number(st.extruder?.temperature||0),target:Number(st.extruder?.target||0)}, bed:{actual:Number(st.heater_bed?.temperature||0),target:Number(st.heater_bed?.target||0)} });
     }
@@ -2339,19 +2416,19 @@ app.post('/api/printers/:id/control', async (req, res) => {
       if (!['X', 'Y', 'Z'].includes(axis) || !Number.isFinite(distance) || distance === 0 || Math.abs(distance) > 100) return res.status(400).json({ error: 'Movimento inválido. O limite por comando é 100 mm.' });
       const speed = axis === 'Z' ? 600 : 6000;
       const script = `G91\nG1 ${axis}${distance.toFixed(3)} F${speed}\nG90`;
-      if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) return res.status(409).json({error:'Movimento não disponível no protocolo Anycubic stock.'}); await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
+      if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) { const axisMap={X:1,Y:2,Z:3}; await anycubicStockSession(printer,[{type:'axis',action:'move',data:{axis:axisMap[axis],move_type:distance>0?1:0,distance:Math.abs(distance)}}]); } else await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
     } else if (action === 'home') {
       const axis = clean(req.body?.axis, 3).toUpperCase();
       if (!['ALL', 'X', 'Y', 'Z'].includes(axis)) return res.status(400).json({ error: 'Eixo de homing inválido.' });
       const script = axis === 'ALL' ? 'G28' : `G28 ${axis}`;
-      if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) return res.status(409).json({error:'Homing não disponível no protocolo Anycubic stock.'}); await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
+      if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) { const commands=axis==='ALL'?[{type:'axis',action:'move',data:{axis:4,move_type:2,distance:0}},{type:'axis',action:'move',data:{axis:3,move_type:2,distance:0}}]:[{type:'axis',action:'move',data:{axis:axis==='Z'?3:4,move_type:2,distance:0}}]; await anycubicStockSession(printer,commands); } else await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
     } else if (action === 'temperature') {
       const heater = clean(req.body?.heater, 12).toLowerCase();
       const target = Number(req.body?.target);
       const max = heater === 'nozzle' ? 350 : heater === 'bed' ? 150 : 0;
       if (!max || !Number.isFinite(target) || target < 0 || target > max) return res.status(400).json({ error: 'Temperatura fora dos limites permitidos.' });
       const script = heater === 'nozzle' ? `M104 S${Math.round(target)}` : `M140 S${Math.round(target)}`;
-      if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) return res.status(409).json({error:'Preheat não é suportado pelo protocolo Anycubic stock quando idle.'}); await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
+      if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) { const current=anycubicStockNormalized(await anycubicStockSession(printer)); const data={type:heater==='bed'?1:0,target_hotbed_temp:heater==='bed'?Math.round(target):Math.round(current.temperatures.bed.target),target_nozzle_temp:heater==='nozzle'?Math.round(target):Math.round(current.temperatures.nozzle.target)}; await anycubicStockSession(printer,[{type:'tempature',action:'set',data}]); } else await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
     } else return res.status(400).json({ error: 'Comando de controlo desconhecido.' });
     res.json({ ok: true });
   } catch (error) { res.status(502).json({ error: `A impressora recusou o comando: ${error.response?.data?.error?.message || error.message || 'erro de ligação'}` }); }
