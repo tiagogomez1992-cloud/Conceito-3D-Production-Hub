@@ -437,9 +437,15 @@ function mainViewFromPath(pathname=window.location.pathname) {
 function activateMainView(viewId, updateUrl = true) {
   const tab=document.querySelector(`.tab[data-view="${CSS.escape(viewId)}"]`); const view=document.getElementById(viewId);
   if(!tab||!view)return false;
+  if(updateUrl) {
+    selectedPrinterId=null;
+    selectedFarmProjectId=null;
+    document.body.classList.remove('printer-editor-page','project-editor-page');
+    $('printer-workspace')?.classList.add('hidden');
+    history.pushState({view:viewId},'',mainViewRoutes[viewId]||'/');
+  }
   document.querySelectorAll('.tab').forEach((item)=>item.classList.toggle('active',item===tab));
   document.querySelectorAll('.view').forEach((item)=>item.classList.toggle('active',item===view));
-  if(updateUrl && !isPrinterEditorPage() && !isProjectEditorPage()) history.pushState({view:viewId},'',mainViewRoutes[viewId]||'/');
   return true;
 }
 window.addEventListener('popstate',()=>{ const view=mainViewFromPath(); if(view)activateMainView(view,false); });
