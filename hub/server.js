@@ -1365,16 +1365,36 @@ async function anycubicMoonrakerStatus(printer) {
 async function anycubicMoonrakerGcode(printer, script) {
   return client.post(`http://${printerHost(printer)}:7125/printer/gcode/script`, null, { timeout:5000, params:{ script } });
 }
+async function moonrakerBackend(printer, ports = [7125]) {
+  const host = printerHost(printer);
+  for (const port of ports) {
+    try {
+      const response = await client.get(`http://${host}:${port}/server/info`, { timeout:1800, headers:printer.api_key ? {'X-Api-Key':printer.api_key} : {} });
+      if (response.data?.result || response.data?.moonraker_version || response.data?.api_version) return { host, port, base:`http://${host}:${port}` };
+    } catch {}
+  }
+  return null;
+}
+async function moonrakerControlStatus(printer, backend) {
+  const response=await client.get(`${backend.base}/printer/objects/query?print_stats&virtual_sdcard&display_status&toolhead&extruder&heater_bed`,{timeout:3500,headers:printer.api_key?{'X-Api-Key':printer.api_key}:{}});
+  const status=response.data?.result?.status||{}; const stats=status.print_stats||{}; const virtualSd=status.virtual_sdcard||{}; const display=status.display_status||{};
+  return {status,stats,virtualSd,display};
+}
+async function moonrakerBackendGcode(printer, backend, script) {
+  return client.post(`${backend.base}/printer/gcode/script`,null,{timeout:5000,params:{script},headers:printer.api_key?{'X-Api-Key':printer.api_key}:{}});
+}
 async function directPrinterStatus(printer, value) {
   const localProfile = () => printerMaterialProfile(value, printer);
   const unavailable = { ...printer, status: 'OFFLINE', job_name: null, job_progress: 0, job_time_remaining: null, material_profile: localProfile(), checked_at: new Date().toISOString() };
   try {
     if (printer.type === 'klipper') {
-      const response = await client.get(printerEndpoint(printer, '/printer/objects/query?print_stats&virtual_sdcard&display_status', 7125), { timeout: 3500, headers: printer.api_key ? { 'X-Api-Key': printer.api_key } : {} });
+      const response = await client.get(printerEndpoint(printer, '/printer/objects/query?print_stats&virtual_sdcard&display_status&extruder&heater_bed&webhooks', 7125), { timeout: 3500, headers: printer.api_key ? { 'X-Api-Key': printer.api_key } : {} });
       const status = response.data?.result?.status || {};
       const stats = status.print_stats || {}; const virtualSd = status.virtual_sdcard || {}; const display = status.display_status || {};
       const reportedSlots = await moonrakerReportedMaterialSlots(printer);
-      return { ...printer, status: canonicalState(stats.state), job_name: stats.filename || null, job_progress: Number(virtualSd.progress ?? display.progress ?? 0), job_time_remaining: null, material_profile: printerMaterialProfile(value, printer, reportedSlots), checked_at: new Date().toISOString() };
+      const message=clean(stats.message || status.webhooks?.state_message,500);
+      const alerts=(canonicalState(stats.state)==='ERROR' || /error|shutdown/i.test(String(status.webhooks?.state||''))) ? [{type:'KLIPPER',code:message || status.webhooks?.state || 'ERROR'}] : [];
+      return { ...printer, status: canonicalState(stats.state), job_name: stats.filename || null, job_progress: Number(virtualSd.progress ?? display.progress ?? 0), job_time_remaining: null, temperatures:{nozzle:{actual:Number(status.extruder?.temperature||0),target:Number(status.extruder?.target||0)},bed:{actual:Number(status.heater_bed?.temperature||0),target:Number(status.heater_bed?.target||0)}}, alerts, material_profile: printerMaterialProfile(value, printer, reportedSlots), checked_at: new Date().toISOString() };
     }
     if (printer.type === 'octoprint') {
       const response = await client.get(printerEndpoint(printer, '/api/job'), { timeout: 3500, headers: printer.api_key ? { 'X-Api-Key': printer.api_key } : {} });
@@ -1385,6 +1405,12 @@ async function directPrinterStatus(printer, value) {
       const response = await client.get(printerEndpoint(printer, '/api/v1/status', 80), { timeout: 3500, headers: printer.api_key ? { 'X-Api-Key': printer.api_key } : {} });
       const printerData = response.data?.printer || response.data || {}; const job = response.data?.job || {};
       return { ...printer, status: canonicalState(printerData.state || printerData.status), job_name: job.file?.name || job.file_name || null, job_progress: Number(job.progress || printerData.progress || 0), job_time_remaining: Number(job.time_remaining || 0) || null, material_profile: localProfile(), checked_at: new Date().toISOString() };
+    }
+    if (printer.type === 'creality') {
+      const backend=await moonrakerBackend(printer,[7125,4408]);
+      if (!backend) return res.status(409).json({error:'Creality stock detetada, mas Moonraker não está acessível. Ativa Moonraker/Fluidd para controlo completo.'});
+      const moon=await moonrakerControlStatus(printer,backend); const st=moon.status;
+      return res.json({state:canonicalState(moon.stats.state),position:st.toolhead?.position||null,backend:'moonraker',port:backend.port,nozzle:{actual:Number(st.extruder?.temperature||0),target:Number(st.extruder?.target||0)},bed:{actual:Number(st.heater_bed?.temperature||0),target:Number(st.heater_bed?.target||0)}});
     }
     if (printer.type === 'anycubic') {
       if (await anycubicMoonrakerAvailable(printer)) {
@@ -1417,10 +1443,18 @@ async function directPrinterStatus(printer, value) {
       const reachable = await portOpen(printerHost(printer), 8883);
       return { ...printer, status: reachable ? 'ONLINE' : 'OFFLINE', job_name: null, job_progress: 0, job_time_remaining: null, material_profile: localProfile(), checked_at: new Date().toISOString() };
     }
-    if (printer.type === 'creality' || printer.type === 'elegoo-centauri' || printer.type === 'elegoo-centauri2') {
-      const port = printer.type === 'creality' ? 9999 : 3030;
-      const reachable = await portOpen(printerHost(printer), port);
-      return { ...printer, status: reachable ? 'ONLINE' : 'OFFLINE', job_name: null, job_progress: 0, job_time_remaining: null, material_profile: localProfile(), checked_at: new Date().toISOString() };
+    if (printer.type === 'creality') {
+      const backend=await moonrakerBackend(printer,[7125,4408]);
+      if (backend) {
+        const moon=await moonrakerControlStatus(printer,backend);
+        return { ...printer, control_backend:'moonraker', moonraker_port:backend.port, status:canonicalState(moon.stats.state), job_name:moon.stats.filename||null, job_progress:Number(moon.virtualSd.progress??moon.display.progress??0), job_time_remaining:null, temperatures:{nozzle:{actual:Number(moon.status.extruder?.temperature||0),target:Number(moon.status.extruder?.target||0)},bed:{actual:Number(moon.status.heater_bed?.temperature||0),target:Number(moon.status.heater_bed?.target||0)}}, material_profile:localProfile(), checked_at:new Date().toISOString() };
+      }
+      const reachable=await portOpen(printerHost(printer),9999);
+      return { ...printer, control_backend:'creality-stock', status:reachable?'ONLINE':'OFFLINE', job_name:null, job_progress:0, job_time_remaining:null, material_profile:localProfile(), checked_at:new Date().toISOString() };
+    }
+    if (printer.type === 'elegoo-centauri' || printer.type === 'elegoo-centauri2') {
+      const reachable=await portOpen(printerHost(printer),3030);
+      return { ...printer, status:reachable?'ONLINE':'OFFLINE', job_name:null, job_progress:0, job_time_remaining:null, material_profile:localProfile(), checked_at:new Date().toISOString() };
     }
     return { ...printer, status: 'UNKNOWN', job_name: null, job_progress: 0, job_time_remaining: null, material_profile: localProfile(), checked_at: new Date().toISOString() };
   } catch { return unavailable; }
@@ -2377,7 +2411,7 @@ async function klipperGcode(printer, script) {
 app.get('/api/printers/:id/control-status', async (req, res) => {
   const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
   if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
-  if (!['klipper', 'bambu', 'anycubic'].includes(printer.type)) return res.status(409).json({ error: 'O controlo manual ainda não está disponível para este tipo de impressora.' });
+  if (!['klipper', 'bambu', 'anycubic', 'creality'].includes(printer.type)) return res.status(409).json({ error: 'O controlo manual ainda não está disponível para este tipo de impressora.' });
   try {
     if (printer.type === 'anycubic') {
       if (!(await anycubicMoonrakerAvailable(printer))) {
@@ -2405,7 +2439,7 @@ app.get('/api/printers/:id/control-status', async (req, res) => {
 app.post('/api/printers/:id/control', async (req, res) => {
   const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
   if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
-  if (!['klipper', 'bambu', 'anycubic'].includes(printer.type)) return res.status(409).json({ error: 'O controlo manual ainda não está disponível para este tipo de impressora.' });
+  if (!['klipper', 'bambu', 'anycubic', 'creality'].includes(printer.type)) return res.status(409).json({ error: 'O controlo manual ainda não está disponível para este tipo de impressora.' });
   const action = clean(req.body?.action, 30).toLowerCase();
   try {
     if (action === 'move') {
@@ -2416,19 +2450,19 @@ app.post('/api/printers/:id/control', async (req, res) => {
       if (!['X', 'Y', 'Z'].includes(axis) || !Number.isFinite(distance) || distance === 0 || Math.abs(distance) > 100) return res.status(400).json({ error: 'Movimento inválido. O limite por comando é 100 mm.' });
       const speed = axis === 'Z' ? 600 : 6000;
       const script = `G91\nG1 ${axis}${distance.toFixed(3)} F${speed}\nG90`;
-      if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) { const axisMap={X:1,Y:2,Z:3}; await anycubicStockSession(printer,[{type:'axis',action:'move',data:{axis:axisMap[axis],move_type:distance>0?1:0,distance:Math.abs(distance)}}]); } else await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
+      if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'creality') { const backend=await moonrakerBackend(printer,[7125,4408]); if(!backend)return res.status(409).json({error:'Moonraker Creality não acessível.'}); await moonrakerBackendGcode(printer,backend,script); } else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) { const axisMap={X:1,Y:2,Z:3}; await anycubicStockSession(printer,[{type:'axis',action:'move',data:{axis:axisMap[axis],move_type:distance>0?1:0,distance:Math.abs(distance)}}]); } else await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
     } else if (action === 'home') {
       const axis = clean(req.body?.axis, 3).toUpperCase();
       if (!['ALL', 'X', 'Y', 'Z'].includes(axis)) return res.status(400).json({ error: 'Eixo de homing inválido.' });
       const script = axis === 'ALL' ? 'G28' : `G28 ${axis}`;
-      if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) { const commands=axis==='ALL'?[{type:'axis',action:'move',data:{axis:4,move_type:2,distance:0}},{type:'axis',action:'move',data:{axis:3,move_type:2,distance:0}}]:[{type:'axis',action:'move',data:{axis:axis==='Z'?3:4,move_type:2,distance:0}}]; await anycubicStockSession(printer,commands); } else await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
+      if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'creality') { const backend=await moonrakerBackend(printer,[7125,4408]); if(!backend)return res.status(409).json({error:'Moonraker Creality não acessível.'}); await moonrakerBackendGcode(printer,backend,script); } else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) { const commands=axis==='ALL'?[{type:'axis',action:'move',data:{axis:4,move_type:2,distance:0}},{type:'axis',action:'move',data:{axis:3,move_type:2,distance:0}}]:[{type:'axis',action:'move',data:{axis:axis==='Z'?3:4,move_type:2,distance:0}}]; await anycubicStockSession(printer,commands); } else await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
     } else if (action === 'temperature') {
       const heater = clean(req.body?.heater, 12).toLowerCase();
       const target = Number(req.body?.target);
       const max = heater === 'nozzle' ? 350 : heater === 'bed' ? 150 : 0;
       if (!max || !Number.isFinite(target) || target < 0 || target > max) return res.status(400).json({ error: 'Temperatura fora dos limites permitidos.' });
       const script = heater === 'nozzle' ? `M104 S${Math.round(target)}` : `M140 S${Math.round(target)}`;
-      if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) { const current=anycubicStockNormalized(await anycubicStockSession(printer)); const data={type:heater==='bed'?1:0,target_hotbed_temp:heater==='bed'?Math.round(target):Math.round(current.temperatures.bed.target),target_nozzle_temp:heater==='nozzle'?Math.round(target):Math.round(current.temperatures.nozzle.target)}; await anycubicStockSession(printer,[{type:'tempature',action:'set',data}]); } else await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
+      if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'creality') { const backend=await moonrakerBackend(printer,[7125,4408]); if(!backend)return res.status(409).json({error:'Moonraker Creality não acessível.'}); await moonrakerBackendGcode(printer,backend,script); } else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) { const current=anycubicStockNormalized(await anycubicStockSession(printer)); const data={type:heater==='bed'?1:0,target_hotbed_temp:heater==='bed'?Math.round(target):Math.round(current.temperatures.bed.target),target_nozzle_temp:heater==='nozzle'?Math.round(target):Math.round(current.temperatures.nozzle.target)}; await anycubicStockSession(printer,[{type:'tempature',action:'set',data}]); } else await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
     } else return res.status(400).json({ error: 'Comando de controlo desconhecido.' });
     res.json({ ok: true });
   } catch (error) { res.status(502).json({ error: `A impressora recusou o comando: ${error.response?.data?.error?.message || error.message || 'erro de ligação'}` }); }
