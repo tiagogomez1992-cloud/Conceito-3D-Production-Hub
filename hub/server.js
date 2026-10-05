@@ -1406,12 +1406,6 @@ async function directPrinterStatus(printer, value) {
       const printerData = response.data?.printer || response.data || {}; const job = response.data?.job || {};
       return { ...printer, status: canonicalState(printerData.state || printerData.status), job_name: job.file?.name || job.file_name || null, job_progress: Number(job.progress || printerData.progress || 0), job_time_remaining: Number(job.time_remaining || 0) || null, material_profile: localProfile(), checked_at: new Date().toISOString() };
     }
-    if (printer.type === 'creality') {
-      const backend=await moonrakerBackend(printer,[7125,4408]);
-      if (!backend) return res.status(409).json({error:'Creality stock detetada, mas Moonraker não está acessível. Ativa Moonraker/Fluidd para controlo completo.'});
-      const moon=await moonrakerControlStatus(printer,backend); const st=moon.status;
-      return res.json({state:canonicalState(moon.stats.state),position:st.toolhead?.position||null,backend:'moonraker',port:backend.port,nozzle:{actual:Number(st.extruder?.temperature||0),target:Number(st.extruder?.target||0)},bed:{actual:Number(st.heater_bed?.temperature||0),target:Number(st.heater_bed?.target||0)}});
-    }
     if (printer.type === 'anycubic') {
       if (await anycubicMoonrakerAvailable(printer)) {
         const moon = await anycubicMoonrakerStatus(printer);
@@ -1476,6 +1470,42 @@ function dispatchStatus(value, part, snapshots = []) {
   }
   return { dispatchable: true, reasons: [], notes: ready.map((printer) => `${printer.name}: material compatível em ${printer.material_profile?.label || 'bobine'}.`) };
 }
+function smartRouteOrder(value, order, snapshots) {
+  const activeJobs=value.jobs.filter((job)=>!['CANCELLED','FINISHED','COMPLETED'].includes(String(job.status||'').toUpperCase()));
+  const load=new Map(); for(const job of activeJobs) load.set(Number(job.printer_id),(load.get(Number(job.printer_id))||0)+1);
+  const routes=[]; const entries=Array.isArray(order.library_parts)?order.library_parts:[];
+  for(const entry of entries) {
+    const part=getLibraryPart(value,entry.part_id); if(!part)continue;
+    const variants=libraryPartFiles(value,part.id,true);
+    const requested=Math.max(1,Number(entry.requested_quantity)||1);
+    const candidates=[];
+    for(const printer of snapshots) {
+      const state=String(printer.status||'UNKNOWN').toUpperCase();
+      const files=variants.filter((file)=>printerSupportsProductionFile(printer,file));
+      if(!files.length)continue;
+      for(const file of files) {
+        const material=gcodeMaterialCompatibility(value,printer,file);
+        let score=0; const reasons=[];
+        if(['IDLE','ONLINE','FINISHED'].includes(state)){score+=60;reasons.push('máquina livre');}
+        else if(state==='PRINTING'){score+=15;reasons.push('ocupada, entra em fila');}
+        else if(state==='PAUSED'){score-=20;reasons.push('máquina em pausa');}
+        else {score-=100;reasons.push(`estado ${state}`);}
+        if(material.compatible){score+=30;reasons.push('material carregado');} else {score-=35;reasons.push('requer troca de material');}
+        const queued=load.get(Number(printer.id))||0; score-=queued*8; if(queued)reasons.push(`${queued} trabalho(s) já em fila`);
+        if(entry.selected_file_id===file.id){score+=12;reasons.push('G-code selecionado na encomenda');}
+        candidates.push({printer_id:printer.id,printer_name:printer.name,printer_status:state,file_id:file.id,file_name:file.name||file.original_name||part.name,score,material_ready:material.compatible,queue_depth:queued,reasons});
+      }
+    }
+    candidates.sort((a,b)=>b.score-a.score || a.queue_depth-b.queue_depth || String(a.printer_name).localeCompare(String(b.printer_name),'pt-PT'));
+    routes.push({part_id:part.id,part_name:part.name,quantity:requested,recommended:candidates[0]||null,alternatives:candidates.slice(1,4),dispatchable:Boolean(candidates[0]&&candidates[0].score>=0),reason:candidates.length?'':'Nenhuma impressora tem um G-code compatível para esta peça.'});
+  }
+  return routes;
+}
+function smartQueue(value, snapshots) {
+  const orders=[...value.orders].filter((order)=>!['completed','cancelled'].includes(String(order.status||'').toLowerCase())).sort((a,b)=>Number(b.priority||0)-Number(a.priority||0)||String(a.due_date||'9999').localeCompare(String(b.due_date||'9999')));
+  return orders.map((order)=>({order_id:order.id,title:order.title||order.order_number||order.id,priority:Number(order.priority||0),due_date:order.due_date||null,status:order.status,routes:smartRouteOrder(value,order,snapshots)}));
+}
+
 // A file is compatible with a printer profile, never merely with a brand.  The
 // relaxed tail comparison deliberately accepts a library profile such as
 // "P1S" for a registered "Bambu Lab P1S", while still keeping e.g. an A1 out
@@ -1807,7 +1837,8 @@ app.get('/api/summary', async (_req, res) => {
   const projects = [...saved.projects].sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || Number(b.id) - Number(a.id));
   const jobs = [...saved.jobs].map((job) => ({ ...job, part_name: getManagedPart(saved, job.part_id)?.name || null, printer_name: getManagedPrinter(saved, job.printer_id)?.name || null }));
   const alarmHistory=normalizedFarmAlarms(saved,printerItems,stockItems); const activeAlarms=alarmHistory.filter((alarm)=>alarm.status!=='resolved');
-  res.json({ generatedAt: new Date().toISOString(), alarms:{active:activeAlarms,history:alarmHistory.slice(0,50)}, services: { productionHub: true }, system: { hostname: os.hostname(), uptime_seconds: os.uptime(), memory_total_mb: Math.round(os.totalmem() / 1048576), memory_used_mb: Math.round((os.totalmem() - os.freemem()) / 1048576), cpu_load_1m: Number(os.loadavg()[0].toFixed(2)) }, printers: { total: printerItems.length, online: printerItems.filter((item) => online.has(String(item.status || '').toUpperCase())).length, printing: printerItems.filter((item) => String(item.status || '').toUpperCase() === 'PRINTING').length, items: printerItems }, spools: { total: stockItems.length, low: stockItems.filter((item) => Number(item.remaining_weight || 0) > 0 && Number(item.remaining_weight || 0) < 200).length, items: spoolItems, stock: stockItems }, production: { projects, jobs, orders }, assignments: saved.assignments, consumption: saved.consumption.slice(0, 20) });
+  const routing=smartQueue(saved,printerItems);
+  res.json({ generatedAt: new Date().toISOString(), smart_queue:routing, alarms:{active:activeAlarms,history:alarmHistory.slice(0,50)}, services: { productionHub: true }, system: { hostname: os.hostname(), uptime_seconds: os.uptime(), memory_total_mb: Math.round(os.totalmem() / 1048576), memory_used_mb: Math.round((os.totalmem() - os.freemem()) / 1048576), cpu_load_1m: Number(os.loadavg()[0].toFixed(2)) }, printers: { total: printerItems.length, online: printerItems.filter((item) => online.has(String(item.status || '').toUpperCase())).length, printing: printerItems.filter((item) => String(item.status || '').toUpperCase() === 'PRINTING').length, items: printerItems }, spools: { total: stockItems.length, low: stockItems.filter((item) => Number(item.remaining_weight || 0) > 0 && Number(item.remaining_weight || 0) < 200).length, items: spoolItems, stock: stockItems }, production: { projects, jobs, orders }, assignments: saved.assignments, consumption: saved.consumption.slice(0, 20) });
 });
 
 app.post('/api/alarms/:id/acknowledge', (req,res) => {
@@ -1821,6 +1852,9 @@ app.post('/api/alarms/:id/resolve', (req,res) => {
   if(!alarm) return res.status(404).json({error:'Alarme não encontrado.'});
   alarm.status='resolved'; alarm.resolved_at=new Date().toISOString(); save(saved); return res.json({ok:true,alarm});
 });
+
+app.get('/api/smart-queue', async (_req,res) => { const saved=state(); const snapshots=await managedPrinterSnapshots(saved); res.json({generated_at:new Date().toISOString(),items:smartQueue(saved,snapshots)}); });
+app.get('/api/orders/:id/smart-route', async (req,res) => { const saved=state(); const order=getOrder(saved,req.params.id); if(!order)return res.status(404).json({error:'Encomenda não encontrada.'}); const snapshots=await managedPrinterSnapshots(saved); res.json({order_id:order.id,routes:smartRouteOrder(saved,order,snapshots)}); });
 
 app.get('/api/display/status', async (req, res) => {
   if (!displayTokenIsValid(req)) return res.status(401).json({ error: 'Token de painel inválido.' });
