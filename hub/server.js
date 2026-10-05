@@ -2103,6 +2103,59 @@ app.post('/api/orders/:id/complete', async (req, res) => {
   item.status = 'completed'; item.updated_at = new Date().toISOString(); save(saved); res.json({ order: item, consumed_grams: grams || null, consumed_spools: consumed, gcode_plan: plan });
 });
 
+function printerCameraUrl(printer) {
+  const configured = clean(printer?.camera_url, 500);
+  if (configured) {
+    try {
+      const url = new URL(/^https?:\/\//i.test(configured) ? configured : `http://${configured}`);
+      if (!['http:', 'https:'].includes(url.protocol)) return null;
+      return url;
+    } catch { return null; }
+  }
+  if (clean(printer?.type, 40).toLowerCase() !== 'klipper') return null;
+  const host = printerHost(printer);
+  if (!host) return null;
+  return new URL(`http://${host}/webcam/?action=stream`);
+}
+function privateCameraHost(hostname) {
+  const parts = String(hostname || '').split('.').map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  return parts[0] === 10
+    || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+    || (parts[0] === 192 && parts[1] === 168);
+}
+app.get('/api/printers/:id/camera', async (req, res) => {
+  const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
+  if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
+  const camera = printerCameraUrl(printer);
+  if (!camera) return res.status(404).json({ error: 'Câmara não configurada para esta impressora.' });
+  const expectedHost = printerHost(printer);
+  if (!privateCameraHost(camera.hostname) && camera.hostname !== expectedHost) return res.status(400).json({ error: 'O URL da câmara tem de apontar para um endereço privado da rede da farm.' });
+  try {
+    const upstream = await axios.get(camera.toString(), {
+      responseType: 'stream',
+      timeout: 10000,
+      maxRedirects: 0,
+      validateStatus: () => true,
+      headers: { Accept: req.get('Accept') || 'multipart/x-mixed-replace,image/*,*/*' },
+    });
+    if (upstream.status < 200 || upstream.status >= 300) {
+      upstream.data?.destroy?.();
+      return res.status(502).json({ error: `A câmara respondeu com HTTP ${upstream.status}.` });
+    }
+    res.status(200);
+    res.set('Content-Type', upstream.headers['content-type'] || 'application/octet-stream');
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    req.on('close', () => upstream.data?.destroy?.());
+    upstream.data.on('error', () => { if (!res.headersSent) res.status(502).end(); else res.end(); });
+    upstream.data.pipe(res);
+  } catch (error) {
+    if (!res.headersSent) res.status(502).json({ error: `Não foi possível obter o stream da câmara: ${error.message || 'erro de ligação'}` });
+    else res.end();
+  }
+});
+
 app.post('/api/printers/discover', async (req, res) => {
   const requested = clean(req.body?.subnet, 32); if (requested && !requestedPrivateNetwork(requested)) return res.status(400).json({ error: 'Indica uma rede privada /24, por exemplo 192.168.1.0/24.' });
   try { res.json(await discoverLocalPrinters(requested)); } catch (error) { res.status(502).json({ error: `Não foi possível analisar a rede local: ${error.message || 'erro desconhecido'}` }); }
