@@ -1388,11 +1388,13 @@ async function directPrinterStatus(printer, value) {
   const unavailable = { ...printer, status: 'OFFLINE', job_name: null, job_progress: 0, job_time_remaining: null, material_profile: localProfile(), checked_at: new Date().toISOString() };
   try {
     if (printer.type === 'klipper') {
-      const response = await client.get(printerEndpoint(printer, '/printer/objects/query?print_stats&virtual_sdcard&display_status', 7125), { timeout: 3500, headers: printer.api_key ? { 'X-Api-Key': printer.api_key } : {} });
+      const response = await client.get(printerEndpoint(printer, '/printer/objects/query?print_stats&virtual_sdcard&display_status&extruder&heater_bed&webhooks', 7125), { timeout: 3500, headers: printer.api_key ? { 'X-Api-Key': printer.api_key } : {} });
       const status = response.data?.result?.status || {};
       const stats = status.print_stats || {}; const virtualSd = status.virtual_sdcard || {}; const display = status.display_status || {};
       const reportedSlots = await moonrakerReportedMaterialSlots(printer);
-      return { ...printer, status: canonicalState(stats.state), job_name: stats.filename || null, job_progress: Number(virtualSd.progress ?? display.progress ?? 0), job_time_remaining: null, material_profile: printerMaterialProfile(value, printer, reportedSlots), checked_at: new Date().toISOString() };
+      const message=clean(stats.message || status.webhooks?.state_message,500);
+      const alerts=(canonicalState(stats.state)==='ERROR' || /error|shutdown/i.test(String(status.webhooks?.state||''))) ? [{type:'KLIPPER',code:message || status.webhooks?.state || 'ERROR'}] : [];
+      return { ...printer, status: canonicalState(stats.state), job_name: stats.filename || null, job_progress: Number(virtualSd.progress ?? display.progress ?? 0), job_time_remaining: null, temperatures:{nozzle:{actual:Number(status.extruder?.temperature||0),target:Number(status.extruder?.target||0)},bed:{actual:Number(status.heater_bed?.temperature||0),target:Number(status.heater_bed?.target||0)}}, alerts, material_profile: printerMaterialProfile(value, printer, reportedSlots), checked_at: new Date().toISOString() };
     }
     if (printer.type === 'octoprint') {
       const response = await client.get(printerEndpoint(printer, '/api/job'), { timeout: 3500, headers: printer.api_key ? { 'X-Api-Key': printer.api_key } : {} });
