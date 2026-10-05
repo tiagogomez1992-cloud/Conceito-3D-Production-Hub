@@ -1188,3 +1188,17 @@ body.printer-editor-page .printer-workspace { margin-top:7px; }
 @media (max-width:900px) { .stock-entry-row { grid-template-columns:repeat(2,minmax(0,1fr)); }.stock-entry-row .stock-remove { grid-column:span 2; justify-self:start; } }
 @media (max-width:520px) { .stock-form-heading,.stock-form-actions { align-items:stretch; flex-direction:column; }.stock-entry-row { grid-template-columns:1fr; }.stock-entry-row .stock-remove { grid-column:auto; }.stock-form-actions button,.stock-form-heading #add-stock-row { width:100%; } }
 .spool-card-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:11px; }.spool-card-actions .compact { padding:7px 9px; }.stock-legacy-note { display:block; margin-top:9px; color:#d5a15c; font-size:.7rem; line-height:1.35; }.stock-edit-form { margin:0 0 18px; }
+
+/* Printer live camera */
+.printer-camera-panel { padding:20px; border:1px solid #2f3940; border-radius:8px; background:#111619; box-shadow:0 12px 28px #0004; }
+.printer-camera-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:14px; }
+.printer-camera-heading h2 { margin:4px 0 0; font-size:1rem; letter-spacing:.03em; text-transform:uppercase; }
+.printer-camera-actions { display:flex; align-items:center; gap:9px; flex-wrap:wrap; justify-content:flex-end; }
+.printer-camera-frame { position:relative; overflow:hidden; min-height:320px; aspect-ratio:16/9; border:1px solid #29343a; border-radius:6px; background:#070a0c; }
+.printer-camera-frame img { position:relative; z-index:2; display:block; width:100%; height:100%; object-fit:contain; background:#070a0c; }
+.printer-camera-fallback,.printer-camera-placeholder { display:grid; place-content:center; gap:7px; min-height:260px; padding:28px; text-align:center; color:#d8dde0; }
+.printer-camera-fallback { position:absolute; inset:0; z-index:1; min-height:0; }
+.printer-camera-fallback small,.printer-camera-placeholder p { max-width:560px; margin:0 auto; color:#8f9aa0; line-height:1.5; }
+.printer-camera-url-field { grid-column:span 2; }
+.printer-camera-url-field small { color:#7f8a90; font-size:.68rem; font-weight:500; letter-spacing:0; line-height:1.4; text-transform:none; }
+@media (max-width:760px) { .printer-camera-heading { align-items:flex-start; flex-direction:column; } .printer-camera-actions { justify-content:flex-start; } .printer-camera-frame { min-height:220px; } .printer-camera-url-field { grid-column:auto; } }
