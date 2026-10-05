@@ -1277,6 +1277,20 @@ function spoolForRequiredMaterial(value, printer, requiredMaterial, requiredColo
   const matchingSlot = profile.slots.find((slot) => slot.spool_id && materialIsCompatible(slot, requiredMaterial, requiredColor));
   return matchingSlot?.spool_id ? value.spools.find((spool) => Number(spool.id) === Number(matchingSlot.spool_id)) || null : null;
 }
+async function anycubicMoonrakerAvailable(printer) {
+  try {
+    const response = await client.get(`http://${printerHost(printer)}:7125/server/info`, { timeout: 1800 });
+    return Boolean(response.data?.result || response.data?.moonraker_version);
+  } catch { return false; }
+}
+async function anycubicMoonrakerStatus(printer) {
+  const response = await client.get(`http://${printerHost(printer)}:7125/printer/objects/query?print_stats&virtual_sdcard&toolhead&extruder&heater_bed`, { timeout: 3500 });
+  const status = response.data?.result?.status || {};
+  return { status, stats:status.print_stats || {}, virtualSd:status.virtual_sdcard || {} };
+}
+async function anycubicMoonrakerGcode(printer, script) {
+  return client.post(`http://${printerHost(printer)}:7125/printer/gcode/script`, null, { timeout:5000, params:{ script } });
+}
 async function directPrinterStatus(printer, value) {
   const localProfile = () => printerMaterialProfile(value, printer);
   const unavailable = { ...printer, status: 'OFFLINE', job_name: null, job_progress: 0, job_time_remaining: null, material_profile: localProfile(), checked_at: new Date().toISOString() };
@@ -1299,8 +1313,13 @@ async function directPrinterStatus(printer, value) {
       return { ...printer, status: canonicalState(printerData.state || printerData.status), job_name: job.file?.name || job.file_name || null, job_progress: Number(job.progress || printerData.progress || 0), job_time_remaining: Number(job.time_remaining || 0) || null, material_profile: localProfile(), checked_at: new Date().toISOString() };
     }
     if (printer.type === 'anycubic') {
-      await client.get(printerEndpoint(printer, '/info', 18910), { timeout: 3500 });
-      return { ...printer, status: 'ONLINE', job_name: null, job_progress: 0, job_time_remaining: null, material_profile: localProfile(), checked_at: new Date().toISOString() };
+      if (await anycubicMoonrakerAvailable(printer)) {
+        const moon = await anycubicMoonrakerStatus(printer);
+        const reportedSlots = await moonrakerReportedMaterialSlots({ ...printer, url:`http://${printerHost(printer)}:7125` });
+        return { ...printer, control_backend:'moonraker', status:canonicalState(moon.stats.state), job_name:moon.stats.filename || null, job_progress:Number(moon.virtualSd.progress || 0), job_time_remaining:null, temperatures:{ nozzle:{actual:Number(moon.status.extruder?.temperature || 0),target:Number(moon.status.extruder?.target || 0)}, bed:{actual:Number(moon.status.heater_bed?.temperature || 0),target:Number(moon.status.heater_bed?.target || 0)} }, material_profile:printerMaterialProfile(value,printer,reportedSlots), checked_at:new Date().toISOString() };
+      }
+      const info = await client.get(printerEndpoint(printer, '/info', 18910), { timeout:3500 });
+      return { ...printer, control_backend:'anycubic-stock', status:'ONLINE', job_name:null, job_progress:0, job_time_remaining:null, anycubic_info:info.data?.data || info.data || null, material_profile:localProfile(), checked_at:new Date().toISOString() };
     }
     if (printer.type === 'bambu') {
       const telemetry = await bambuLocalReport(printer);
@@ -2284,8 +2303,13 @@ async function klipperGcode(printer, script) {
 app.get('/api/printers/:id/control-status', async (req, res) => {
   const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
   if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
-  if (!['klipper', 'bambu'].includes(printer.type)) return res.status(409).json({ error: 'O controlo manual ainda não está disponível para este tipo de impressora.' });
+  if (!['klipper', 'bambu', 'anycubic'].includes(printer.type)) return res.status(409).json({ error: 'O controlo manual ainda não está disponível para este tipo de impressora.' });
   try {
+    if (printer.type === 'anycubic') {
+      if (!(await anycubicMoonrakerAvailable(printer))) return res.status(409).json({ error:'Anycubic stock detetada. O controlo XYZ/preheat requer Moonraker/Rinkhals; a integração stock será apenas de telemetria e comandos suportados.' });
+      const moon=await anycubicMoonrakerStatus(printer); const st=moon.status;
+      return res.json({ state:canonicalState(moon.stats.state), position:st.toolhead?.position || null, backend:'moonraker', nozzle:{actual:Number(st.extruder?.temperature||0),target:Number(st.extruder?.target||0)}, bed:{actual:Number(st.heater_bed?.temperature||0),target:Number(st.heater_bed?.target||0)} });
+    }
     if (printer.type === 'bambu') {
       const telemetry = await bambuLocalReport(printer); const print = telemetry?.print;
       if (!print) return res.status(502).json({ error: 'Sem telemetria Bambu.' });
@@ -2304,7 +2328,7 @@ app.get('/api/printers/:id/control-status', async (req, res) => {
 app.post('/api/printers/:id/control', async (req, res) => {
   const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
   if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
-  if (!['klipper', 'bambu'].includes(printer.type)) return res.status(409).json({ error: 'O controlo manual ainda não está disponível para este tipo de impressora.' });
+  if (!['klipper', 'bambu', 'anycubic'].includes(printer.type)) return res.status(409).json({ error: 'O controlo manual ainda não está disponível para este tipo de impressora.' });
   const action = clean(req.body?.action, 30).toLowerCase();
   try {
     if (action === 'move') {
@@ -2315,19 +2339,19 @@ app.post('/api/printers/:id/control', async (req, res) => {
       if (!['X', 'Y', 'Z'].includes(axis) || !Number.isFinite(distance) || distance === 0 || Math.abs(distance) > 100) return res.status(400).json({ error: 'Movimento inválido. O limite por comando é 100 mm.' });
       const speed = axis === 'Z' ? 600 : 6000;
       const script = `G91\nG1 ${axis}${distance.toFixed(3)} F${speed}\nG90`;
-      if (printer.type === 'bambu') await bambuCommand(printer, script); else await klipperGcode(printer, script);
+      if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) return res.status(409).json({error:'Movimento não disponível no protocolo Anycubic stock.'}); await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
     } else if (action === 'home') {
       const axis = clean(req.body?.axis, 3).toUpperCase();
       if (!['ALL', 'X', 'Y', 'Z'].includes(axis)) return res.status(400).json({ error: 'Eixo de homing inválido.' });
       const script = axis === 'ALL' ? 'G28' : `G28 ${axis}`;
-      if (printer.type === 'bambu') await bambuCommand(printer, script); else await klipperGcode(printer, script);
+      if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) return res.status(409).json({error:'Homing não disponível no protocolo Anycubic stock.'}); await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
     } else if (action === 'temperature') {
       const heater = clean(req.body?.heater, 12).toLowerCase();
       const target = Number(req.body?.target);
       const max = heater === 'nozzle' ? 350 : heater === 'bed' ? 150 : 0;
       if (!max || !Number.isFinite(target) || target < 0 || target > max) return res.status(400).json({ error: 'Temperatura fora dos limites permitidos.' });
       const script = heater === 'nozzle' ? `M104 S${Math.round(target)}` : `M140 S${Math.round(target)}`;
-      if (printer.type === 'bambu') await bambuCommand(printer, script); else await klipperGcode(printer, script);
+      if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) return res.status(409).json({error:'Preheat não é suportado pelo protocolo Anycubic stock quando idle.'}); await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
     } else return res.status(400).json({ error: 'Comando de controlo desconhecido.' });
     res.json({ ok: true });
   } catch (error) { res.status(502).json({ error: `A impressora recusou o comando: ${error.response?.data?.error?.message || error.message || 'erro de ligação'}` }); }
