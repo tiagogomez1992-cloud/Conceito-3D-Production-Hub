@@ -1,5 +1,6 @@
 const $ = (id) => document.getElementById(id);
 let latest = { printers: [], spools: [], stock: [], assignments: {}, orders: [] };
+let farmFilter = 'all';
 let customers = [];
 let libraryFiles = [];
 let libraryParts = [];
@@ -1185,15 +1186,41 @@ function overviewPrinterCard(printer) {
   const rawProgress = Number(printer.job_progress || 0);
   const progress = rawProgress * (rawProgress <= 1 ? 100 : 1);
   const state = statusClass(printer.status);
-  return `<article class="overview-printer-card ${state}" data-open-printer="${printer.id}" tabindex="0" role="button"><div class="overview-printer-title"><div><strong>${value(printer.name, 'Sem nome')}</strong><small>${state === 'printing' ? 'A imprimir' : value(printer.status, 'Offline')}</small></div><span class="status ${state}"></span></div><div class="overview-printer-preview" aria-hidden="true"><span></span><i></i></div><p>${value(printer.job_name, 'Sem trabalho ativo')}</p><div class="overview-progress"><span style="width:${Math.max(0, Math.min(100, progress || (state === 'printing' ? 4 : 0)))}%"></span></div><div class="overview-printer-footer"><small>${progress ? `${Math.round(progress)}% concluido` : value(printer.model || printer.type, 'Impressora')}</small><small>${state === 'printing' ? 'Em curso' : 'Livre'}</small></div></article>`;
+  const camera = printerCameraAddress(printer);
+  const image = camera ? (String(printer.type || '').toLowerCase() === 'bambu' ? `${camera}?snapshot=1&t=${Date.now()}` : camera) : '';
+  const profile = materialProfile(printer);
+  const loaded = (profile.slots || []).filter((slot) => slot.spool_id || slot.material).length;
+  return `<article class="overview-printer-card ${state}" data-farm-state="${state}" data-open-printer="${printer.id}" tabindex="0" role="button"><div class="overview-printer-title"><div><strong>${value(printer.name, 'Sem nome')}</strong><small>${state === 'printing' ? 'A imprimir' : value(printer.status, 'Offline')}</small></div><span class="status ${state}"></span></div><div class="overview-printer-preview">${image ? `<img src="${escape(image)}" alt="Câmara de ${escape(printer.name || 'impressora')}" loading="lazy">` : '<span></span><i></i>'}</div><p>${value(printer.job_name, 'Sem trabalho ativo')}</p><div class="overview-progress"><span style="width:${Math.max(0, Math.min(100, progress || (state === 'printing' ? 4 : 0)))}%"></span></div><div class="overview-printer-footer"><small>${progress ? `${Math.round(progress)}% concluído` : value(printer.model || printer.type, 'Impressora')}</small><small>${loaded}/${profile.slot_count || 1} material</small></div></article>`;
+}
+
+function renderAlarmCenter() {
+  const list = $('alarm-list'); const count = $('alarm-count'); if (!list || !count) return;
+  const alarms = [];
+  latest.printers.forEach((printer) => {
+    const state = statusClass(printer.status);
+    if (state === 'offline') alarms.push({ level:'critical', title:printer.name, text:'Impressora offline', printer:printer.id });
+    else if (state !== 'online' && state !== 'printing') alarms.push({ level:'warning', title:printer.name, text:`Estado: ${printer.status || 'desconhecido'}`, printer:printer.id });
+  });
+  latest.spools.forEach((spool) => { const info=spoolInfo(spool); if (info.remaining > 0 && info.remaining < 200) alarms.push({level:'warning',title:`${info.material} · Bobine #${spool.id}`,text:`Stock baixo: ${info.remaining} g`}); });
+  count.textContent = `${alarms.length} ${alarms.length === 1 ? 'alerta' : 'alertas'}`;
+  list.innerHTML = alarms.length ? alarms.slice(0,12).map((alarm)=>`<button type="button" class="alarm-item ${alarm.level}" ${alarm.printer ? `data-open-printer="${alarm.printer}"` : ''}><span>!</span><div><strong>${escape(alarm.title)}</strong><small>${escape(alarm.text)}</small></div></button>`).join('') : '<p class="empty overview-empty">Sem alertas ativos. A farm está operacional.</p>';
+}
+function renderCameraWall() {
+  const grid=$('camera-wall-grid'); if(!grid) return;
+  const printers=latest.printers.filter((p)=>printerCameraAddress(p)).slice(0,9);
+  grid.innerHTML=printers.length ? printers.map((p)=>{const camera=printerCameraAddress(p);const src=String(p.type||'').toLowerCase()==='bambu'?`${camera}?snapshot=1&t=${Date.now()}`:camera;return `<button type="button" class="camera-wall-card" data-open-printer="${p.id}"><img src="${escape(src)}" alt="${escape(p.name)}" loading="lazy"><span><strong>${escape(p.name)}</strong><small>${escape(p.status||'UNKNOWN')}</small></span></button>`;}).join('') : '<p class="empty">Nenhuma câmara disponível.</p>';
 }
 
 function renderOverviewFromCurrent() {
   const printerList = $('printer-list');
   if (printerList) {
     const printers = latest.printers;
-    printerList.innerHTML = printers.length ? printers.map(overviewPrinterCard).join('') : '<p class="empty overview-empty">Ainda nao existem impressoras configuradas. Adiciona a primeira no menu Impressoras.</p>';
+    const visiblePrinters = farmFilter === 'all' ? printers : printers.filter((p) => statusClass(p.status) === farmFilter || (farmFilter === 'warning' && !['online','printing','offline'].includes(statusClass(p.status))));
+    printerList.innerHTML = visiblePrinters.length ? visiblePrinters.map(overviewPrinterCard).join('') : '<p class="empty overview-empty">Ainda nao existem impressoras configuradas. Adiciona a primeira no menu Impressoras.</p>';
   }
+
+  renderAlarmCenter();
+  if (!$('camera-wall')?.classList.contains('hidden')) renderCameraWall();
 
   const queue = $('overview-order-queue');
   if (queue) {
@@ -1281,3 +1308,9 @@ document.addEventListener('submit', async (event) => {
   } catch (error) { toast(error.message, 'error'); }
 });
 setInterval(refreshPrinterControls, 3000);
+
+document.addEventListener('click',(event)=>{
+  const filter=event.target.closest('[data-farm-filter]');
+  if(filter){farmFilter=filter.dataset.farmFilter;document.querySelectorAll('[data-farm-filter]').forEach((b)=>b.classList.toggle('active',b===filter));renderOverviewFromCurrent();}
+});
+$('toggle-camera-wall')?.addEventListener('click',()=>{const wall=$('camera-wall');wall.classList.toggle('hidden');if(!wall.classList.contains('hidden'))renderCameraWall();});
