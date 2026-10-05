@@ -187,16 +187,8 @@ function printerWebAddress(printer) {
 }
 function printerCameraAddress(printer) {
   const configured = String(printer?.camera_url || '').trim();
-  if (configured) return /^https?:\/\//i.test(configured) ? configured : `http://${configured}`;
-  if (String(printer?.type || '').toLowerCase() !== 'klipper') return '';
-  const web = printerWebAddress(printer);
-  if (!web) return '';
-  try {
-    const url = new URL(web);
-    return `${url.protocol}//${url.hostname}${url.port && url.port !== '7125' ? `:${url.port}` : ''}/webcam/?action=stream`;
-  } catch {
-    return '';
-  }
+  const automatic = configured || String(printer?.type || '').toLowerCase() === 'klipper';
+  return automatic && printer?.id ? `/api/printers/${encodeURIComponent(printer.id)}/camera` : '';
 }
 function printerCameraMarkup(printer) {
   const camera = printerCameraAddress(printer);
