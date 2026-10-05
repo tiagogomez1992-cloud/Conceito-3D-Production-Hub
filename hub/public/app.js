@@ -447,6 +447,16 @@ stockEditForm.id = 'stock-edit-form'; stockEditForm.className = 'inline-form sto
 stockEditForm.innerHTML = `<label>Material<input name="material" required placeholder="Ex.: PETG"></label><label>Cor<input name="color" required placeholder="Ex.: Preto"></label><label>Fabricante<input name="brand" placeholder="Opcional"></label><label>Peso da bobine selada<select name="spool_weight" required>${stockWeightOptions()}</select></label><label>N.º de bobines<input name="spool_count" type="number" min="1" max="10000" required></label><button type="submit">Guardar alterações</button><button type="button" class="secondary" data-close-form="stock-edit-form">Cancelar</button><p class="form-note">Só podes alterar ou remover um artigo que ainda não esteja associado a uma impressora nem tenha consumos registados.</p>`;
 $('spool-grid').before(stockEditForm);
 historyTab.onclick = () => { document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === historyTab)); document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view === historyView)); };
+document.addEventListener('click', (event) => {
+  const open=event.target.closest('[data-farm-open]'); const camera=event.target.closest('[data-farm-camera]');
+  if(!open&&!camera)return;
+  event.preventDefault(); event.stopPropagation();
+  const id=Number((open||camera).dataset[open?'farmOpen':'farmCamera']);
+  if(!id)return;
+  location.hash=`#/impressoras/${id}`;
+  if(camera) setTimeout(()=>document.querySelector('.printer-camera-panel')?.scrollIntoView({behavior:'smooth',block:'center'}),250);
+});
+
 document.addEventListener('click', async (event) => {
   const ack=event.target.closest('[data-alarm-ack]'); const resolve=event.target.closest('[data-alarm-resolve]');
   if(!ack&&!resolve)return;
@@ -1199,7 +1209,7 @@ function overviewPrinterCard(printer) {
   const image = camera ? (String(printer.type || '').toLowerCase() === 'bambu' ? `${camera}?snapshot=1&t=${Date.now()}` : camera) : '';
   const profile = materialProfile(printer);
   const loaded = (profile.slots || []).filter((slot) => slot.spool_id || slot.material).length;
-  return `<article class="overview-printer-card ${state}" data-farm-state="${state}" data-open-printer="${printer.id}" tabindex="0" role="button"><div class="overview-printer-title"><div><strong>${value(printer.name, 'Sem nome')}</strong><small>${state === 'printing' ? 'A imprimir' : value(printer.status, 'Offline')}</small></div><span class="status ${state}"></span></div><div class="overview-printer-preview">${image ? `<img src="${escape(image)}" alt="Câmara de ${escape(printer.name || 'impressora')}" loading="lazy">` : '<span></span><i></i>'}</div><p>${value(printer.job_name, 'Sem trabalho ativo')}</p><div class="overview-progress"><span style="width:${Math.max(0, Math.min(100, progress || (state === 'printing' ? 4 : 0)))}%"></span></div><div class="overview-printer-footer"><small>${progress ? `${Math.round(progress)}% concluído` : value(printer.model || printer.type, 'Impressora')}</small><small>${loaded}/${profile.slot_count || 1} material</small></div></article>`;
+  return `<article class="overview-printer-card ${state}" data-farm-state="${state}" data-open-printer="${printer.id}" tabindex="0" role="button"><div class="overview-printer-title"><div><strong>${value(printer.name, 'Sem nome')}</strong><small>${state === 'printing' ? 'A imprimir' : value(printer.status, 'Offline')}</small></div><span class="status ${state}"></span></div><div class="overview-printer-preview">${image ? `<img src="${escape(image)}" alt="Câmara de ${escape(printer.name || 'impressora')}" loading="lazy">` : '<span></span><i></i>'}</div><p>${value(printer.job_name, 'Sem trabalho ativo')}</p><div class="overview-progress"><span style="width:${Math.max(0, Math.min(100, progress || (state === 'printing' ? 4 : 0)))}%"></span></div><div class="overview-printer-footer"><small>${progress ? `${Math.round(progress)}% concluído` : value(printer.model || printer.type, 'Impressora')}</small><small>${loaded}/${profile.slot_count || 1} material</small></div><div class="overview-quick-actions"><button type="button" data-farm-open="${printer.id}">Controlos</button>${camera ? `<button type="button" data-farm-camera="${printer.id}">Câmara</button>` : ''}</div></article>`;
 }
 
 function renderAlarmCenter() {
