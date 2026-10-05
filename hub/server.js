@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const multer = require('multer');
 const net = require('net');
 const http = require('http');
+const tls = require('tls');
 const zlib = require('zlib');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
@@ -2103,6 +2104,59 @@ app.post('/api/orders/:id/complete', async (req, res) => {
   item.status = 'completed'; item.updated_at = new Date().toISOString(); save(saved); res.json({ order: item, consumed_grams: grams || null, consumed_spools: consumed, gcode_plan: plan });
 });
 
+function streamBambuMjpeg(printer, req, res) {
+  const host = printerHost(printer);
+  const accessCode = clean(printer.api_key, 200);
+  if (!host || !accessCode) {
+    res.status(400).json({ error: 'A câmara Bambu requer IP e código de acesso LAN.' });
+    return;
+  }
+  const boundary = 'c3d-bambu-frame';
+  let socket; let buffer = Buffer.alloc(0); let authenticated = false; let closed = false;
+  const close = () => { if (closed) return; closed = true; try { socket?.destroy(); } catch {} };
+  const fail = (message) => {
+    close();
+    if (!res.headersSent) res.status(502).json({ error: message });
+    else res.end();
+  };
+  try {
+    socket = tls.connect({ host, port: 6000, rejectUnauthorized: false, servername: host }, () => {
+      const auth = Buffer.alloc(80);
+      auth.writeUInt32LE(0x40, 0);
+      auth.writeUInt32LE(0x3000, 4);
+      auth.write('bblp', 16, 32, 'ascii');
+      auth.write(accessCode, 48, 32, 'ascii');
+      socket.write(auth);
+      authenticated = true;
+      res.status(200);
+      res.set('Content-Type', `multipart/x-mixed-replace; boundary=${boundary}`);
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.set('Pragma', 'no-cache');
+      res.flushHeaders();
+    });
+    socket.setTimeout(12000);
+    socket.on('timeout', () => fail('A câmara Bambu não respondeu a tempo.'));
+    socket.on('error', (error) => fail(`Não foi possível ligar à câmara Bambu: ${error.message || 'erro TLS'}`));
+    socket.on('data', (chunk) => {
+      if (!authenticated || closed) return;
+      buffer = Buffer.concat([buffer, chunk]);
+      while (buffer.length >= 16) {
+        const size = buffer.readUInt32LE(0);
+        if (!Number.isInteger(size) || size < 4 || size > 8 * 1024 * 1024) return fail('A câmara Bambu devolveu um frame inválido.');
+        if (buffer.length < 16 + size) return;
+        const jpeg = buffer.subarray(16, 16 + size);
+        buffer = buffer.subarray(16 + size);
+        if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8 || jpeg[jpeg.length - 2] !== 0xff || jpeg[jpeg.length - 1] !== 0xd9) continue;
+        res.write(`--${boundary}\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpeg.length}\r\n\r\n`);
+        res.write(jpeg);
+        res.write('\r\n');
+      }
+    });
+    socket.on('end', () => { if (!closed) { closed = true; res.end(); } });
+    req.on('close', close);
+  } catch (error) { fail(`Não foi possível iniciar a câmara Bambu: ${error.message || 'erro desconhecido'}`); }
+}
+
 function printerCameraUrl(printer) {
   const configured = clean(printer?.camera_url, 500);
   if (configured) {
@@ -2127,6 +2181,10 @@ function privateCameraHost(hostname) {
 app.get('/api/printers/:id/camera', async (req, res) => {
   const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
   if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
+  if (clean(printer.type, 40).toLowerCase() === 'bambu') {
+    streamBambuMjpeg(printer, req, res);
+    return;
+  }
   const camera = printerCameraUrl(printer);
   if (!camera) return res.status(404).json({ error: 'Câmara não configurada para esta impressora.' });
   const expectedHost = printerHost(printer);
