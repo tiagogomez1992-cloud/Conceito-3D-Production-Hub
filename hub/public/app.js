@@ -447,6 +447,14 @@ stockEditForm.id = 'stock-edit-form'; stockEditForm.className = 'inline-form sto
 stockEditForm.innerHTML = `<label>Material<input name="material" required placeholder="Ex.: PETG"></label><label>Cor<input name="color" required placeholder="Ex.: Preto"></label><label>Fabricante<input name="brand" placeholder="Opcional"></label><label>Peso da bobine selada<select name="spool_weight" required>${stockWeightOptions()}</select></label><label>N.º de bobines<input name="spool_count" type="number" min="1" max="10000" required></label><button type="submit">Guardar alterações</button><button type="button" class="secondary" data-close-form="stock-edit-form">Cancelar</button><p class="form-note">Só podes alterar ou remover um artigo que ainda não esteja associado a uma impressora nem tenha consumos registados.</p>`;
 $('spool-grid').before(stockEditForm);
 historyTab.onclick = () => { document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === historyTab)); document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view === historyView)); };
+document.addEventListener('click', async (event) => {
+  const button=event.target.closest('[data-route-order][data-route-part]'); if(!button)return;
+  event.preventDefault(); button.disabled=true;
+  try { const result=await api(`/api/orders/${encodeURIComponent(button.dataset.routeOrder)}/smart-route/approve`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({part_id:button.dataset.routePart})}); toast(result.message||'Rota aprovada.','success'); await update(); renderOverviewFromCurrent(); }
+  catch(error){ toast(error.message||'Não foi possível aprovar a rota.','error'); }
+  finally{ button.disabled=false; }
+});
+
 document.addEventListener('click', (event) => {
   const open=event.target.closest('[data-farm-open]'); const camera=event.target.closest('[data-farm-camera]');
   if(!open&&!camera)return;
@@ -1240,7 +1248,7 @@ function renderOverviewFromCurrent() {
   if (queue) {
     const orders = latest.orders.filter((order) => order.status !== 'completed').slice(0, 5);
     const routing=new Map((latest.smartQueue||[]).map((item)=>[String(item.order_id),item]));
-    queue.innerHTML = orders.length ? orders.map((order) => { const plan=routing.get(String(order.id)); const routes=plan?.routes||[]; const ready=routes.filter((route)=>route.dispatchable).length; const best=routes.find((route)=>route.recommended)?.recommended; return `<div class="overview-queue-row smart-route-row"><span>${escape(order.id)}</span><strong>${escape(order.title)}</strong><small>${best?`→ ${escape(best.printer_name)} · score ${best.score}`:'Sem rota automática'}${routes.length?` · ${ready}/${routes.length} prontas`:''}</small><em class="${Number(order.priority)===2?'urgent':''}">${Number(order.priority)===2?'Urgente':escape(order.status||'Recebida')}</em></div>`; }).join('') : '<p class="empty overview-empty">Nao existem encomendas ativas na fila.</p>';
+    queue.innerHTML = orders.length ? orders.map((order) => { const plan=routing.get(String(order.id)); const routes=plan?.routes||[]; const ready=routes.filter((route)=>route.dispatchable).length; const best=routes.find((route)=>route.recommended)?.recommended; return `<div class="overview-queue-row smart-route-row"><span>${escape(order.id)}</span><strong>${escape(order.title)}</strong><small>${best?`→ ${escape(best.printer_name)} · score ${best.score}`:'Sem rota automática'}${routes.length?` · ${ready}/${routes.length} prontas`:''}</small><em class="${Number(order.priority)===2?'urgent':''}">${Number(order.priority)===2?'Urgente':escape(order.status||'Recebida')}</em>${routes.filter((route)=>route.recommended).slice(0,2).map((route)=>`<button type="button" class="smart-route-approve" data-route-order="${escape(order.id)}" data-route-part="${escape(route.part_id)}">Aprovar ${escape(route.part_name)} → ${escape(route.recommended.printer_name)}</button>`).join('')}</div>`; }).join('') : '<p class="empty overview-empty">Nao existem encomendas ativas na fila.</p>';
   }
 
   const alerts = $('overview-material-alerts');
