@@ -2113,7 +2113,7 @@ app.post('/api/printers', async (req, res) => {
   if (!printerConnectors.has(type)) return res.status(400).json({ error: 'O tipo de ligação da impressora não é suportado.' });
   if (saved.printers.some((printer) => printer.name.toLocaleLowerCase('pt-PT') === name.toLocaleLowerCase('pt-PT'))) return res.status(409).json({ error: 'Já existe uma impressora com este nome.' });
   const now = new Date().toISOString(); const provisional = { type, brand: clean(req.body?.brand, 80), model }; const material_system = normalizeMaterialSystem(req.body?.material_system || inferMaterialSystem(provisional)); const material_slot_count = materialSlotCount(material_system, req.body?.material_slot_count);
-  const printer = { id: nextId(saved.printers), name, ip, brand: provisional.brand, model, type, api_key: clean(req.body?.api_key, 200), serial_number: clean(req.body?.serial_number, 160), group_name: clean(req.body?.group_name, 100), material_system, material_slot_count, status: 'UNKNOWN', job_name: null, job_progress: 0, created_at: now, updated_at: now };
+  const printer = { id: nextId(saved.printers), name, ip, brand: provisional.brand, model, type, api_key: clean(req.body?.api_key, 200), serial_number: clean(req.body?.serial_number, 160), group_name: clean(req.body?.group_name, 100), camera_url: clean(req.body?.camera_url, 500), material_system, material_slot_count, status: 'UNKNOWN', job_name: null, job_progress: 0, created_at: now, updated_at: now };
   saved.printers.push(printer); save(saved); res.status(201).json(printer);
 });
 app.put('/api/printers/:id', (req, res) => {
@@ -2124,7 +2124,7 @@ app.put('/api/printers/:id', (req, res) => {
   if (!printerConnectors.has(type)) return res.status(400).json({ error: 'O tipo de ligação da impressora não é suportado.' });
   if (saved.printers.some((item) => Number(item.id) !== Number(printer.id) && item.name.toLocaleLowerCase('pt-PT') === name.toLocaleLowerCase('pt-PT'))) return res.status(409).json({ error: 'Já existe uma impressora com este nome.' });
   const provisional = { type, brand: clean(req.body?.brand, 80), model }; const material_system = normalizeMaterialSystem(req.body?.material_system || printer.material_system || inferMaterialSystem(provisional)); const material_slot_count = materialSlotCount(material_system, req.body?.material_slot_count ?? printer.material_slot_count);
-  Object.assign(printer, { name, ip, brand: provisional.brand, model, type, api_key: clean(req.body?.api_key, 200), serial_number: clean(req.body?.serial_number, 160), group_name: clean(req.body?.group_name, 100), material_system, material_slot_count, updated_at: new Date().toISOString() });
+  Object.assign(printer, { name, ip, brand: provisional.brand, model, type, api_key: clean(req.body?.api_key, 200), serial_number: clean(req.body?.serial_number, 160), group_name: clean(req.body?.group_name, 100), camera_url: clean(req.body?.camera_url, 500), material_system, material_slot_count, updated_at: new Date().toISOString() });
   save(saved); res.json(printer);
 });
 app.delete('/api/printers/:id', (req, res) => {
