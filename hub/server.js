@@ -1523,6 +1523,25 @@ function printerSupportsProductionFile(printer, file) {
   if (!fileModel || !printerModel) return false;
   return fileModel === printerModel || fileModel.endsWith(` ${printerModel}`) || printerModel.endsWith(` ${fileModel}`);
 }
+async function dispatcherCapability(printer) {
+  if (!printer) return {backend:'none',upload:false,start:false,reason:'Impressora não encontrada.'};
+  if (printer.type==='klipper') return {backend:'moonraker',upload:true,start:false,base:printerEndpoint(printer,'',7125),reason:'Upload Moonraker disponível; arranque automático bloqueado.'};
+  if (printer.type==='creality') { const backend=await moonrakerBackend(printer,[7125,4408]); return backend ? {backend:'moonraker',upload:true,start:false,base:backend.base,reason:'Moonraker Creality disponível; arranque automático bloqueado.'} : {backend:'creality-stock',upload:false,start:false,reason:'Creality stock ainda sem upload validado.'}; }
+  if (printer.type==='anycubic') { const moon=await anycubicMoonrakerAvailable(printer); return moon ? {backend:'moonraker',upload:true,start:false,base:`http://${printerHost(printer)}:7125`,reason:'Rinkhals/Moonraker disponível; arranque automático bloqueado.'} : {backend:'anycubic-stock',upload:false,start:false,reason:'Anycubic Stock LAN ainda sem upload de ficheiro validado.'}; }
+  if (printer.type==='bambu') return {backend:'bambu-lan',upload:false,start:false,reason:'Telemetria/controlo Bambu LAN ativos; transferência de ficheiro ainda não ativada.'};
+  return {backend:printer.type||'unknown',upload:false,start:false,reason:'Este backend ainda não suporta despacho de ficheiros.'};
+}
+async function dispatcherPlan(value, job) {
+  const printer=getManagedPrinter(value,job?.printer_id); const file=getLibraryFile(value,job?.library_file_id);
+  if(!job||!printer||!file)return {ready:false,blocked:['Job, impressora ou ficheiro indisponível.']};
+  const disk=path.join(uploadsDir,path.basename(file.stored_name||'')); const capability=await dispatcherCapability(printer); const blocked=[];
+  if(!fs.existsSync(disk))blocked.push('Ficheiro físico não encontrado na Biblioteca.');
+  if(!printerSupportsProductionFile(printer,file))blocked.push('O perfil do ficheiro não é compatível com esta impressora.');
+  const snapshots=await managedPrinterSnapshots(value); const snapshot=snapshots.find((item)=>Number(item.id)===Number(printer.id)); const material=snapshot?productionFileMaterialReadiness(value,snapshot,file):{ready:false,missing:[]};
+  if(!material.ready)blocked.push(`Material em falta: ${(material.missing||[]).map((need)=>`${need.material||'material'}${need.color?` ${need.color}`:''}`).join(', ')||'não identificado'}.`);
+  if(!capability.upload)blocked.push(capability.reason);
+  return {ready:blocked.length===0,job_id:job.id,printer:{id:printer.id,name:printer.name,model:printer.model,type:printer.type},file:{id:file.id,name:file.original_name,size_bytes:file.size_bytes||null},capability:{backend:capability.backend,upload:capability.upload,start:false},printer_state:snapshot?.status||'UNKNOWN',material_ready:material.ready,blocked};
+}
 function productionFileMaterialNeeds(file) {
   const metadata = file?.metadata || {};
   const entries = Array.isArray(metadata.materials) && metadata.materials.length
@@ -1877,6 +1896,19 @@ app.patch('/api/jobs/:id/routing', async (req,res) => {
   const snapshots=await managedPrinterSnapshots(saved); const snap=snapshots.find((item)=>Number(item.id)===printerId); const material=snap?gcodeMaterialCompatibility(saved,snap,file):{compatible:false};
   job.printer_id=printerId; job.status=material.compatible ? (['IDLE','ONLINE','FINISHED'].includes(String(snap?.status||'').toUpperCase())?'QUEUED':'WAITING') : 'AWAITING_MATERIAL'; job.updated_at=new Date().toISOString(); save(saved); res.json(job);
 });
+
+app.get('/api/jobs/:id/dispatch-plan', async (req,res) => {
+  const saved=state(); const job=saved.jobs.find((item)=>Number(item.id)===Number(req.params.id)); if(!job)return res.status(404).json({error:'Trabalho não encontrado.'});
+  res.json(await dispatcherPlan(saved,job));
+});
+app.post('/api/jobs/:id/stage-dispatch', async (req,res) => {
+  const saved=state(); const job=saved.jobs.find((item)=>Number(item.id)===Number(req.params.id)); if(!job)return res.status(404).json({error:'Trabalho não encontrado.'});
+  if(!['QUEUED','WAITING','AWAITING_MATERIAL','STAGED'].includes(String(job.status||'').toUpperCase()))return res.status(409).json({error:'Este trabalho já não pode ser preparado para despacho.'});
+  const plan=await dispatcherPlan(saved,job); if(!plan.ready)return res.status(409).json({error:'O trabalho ainda não está pronto para despacho.',plan});
+  job.status='STAGED'; job.dispatch_backend=plan.capability.backend; job.staged_at=new Date().toISOString(); job.updated_at=job.staged_at; save(saved);
+  res.json({job,plan:{...plan,ready:true},message:'Trabalho preparado para despacho. O arranque automático continua bloqueado.'});
+});
+app.post('/api/jobs/:id/start', (_req,res) => res.status(423).json({error:'Auto Dispatch ainda está bloqueado até à validação do Smart Routing e dos backends de transferência.'}));
 
 app.get('/api/smart-queue', async (_req,res) => { const saved=state(); const snapshots=await managedPrinterSnapshots(saved); res.json({generated_at:new Date().toISOString(),items:smartQueue(saved,snapshots)}); });
 app.get('/api/orders/:id/smart-route', async (req,res) => { const saved=state(); const order=getOrder(saved,req.params.id); if(!order)return res.status(404).json({error:'Encomenda não encontrada.'}); const snapshots=await managedPrinterSnapshots(saved); res.json({order_id:order.id,routes:smartRouteOrder(saved,order,snapshots)}); });
