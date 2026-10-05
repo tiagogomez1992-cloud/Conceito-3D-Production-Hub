@@ -1853,6 +1853,31 @@ app.post('/api/alarms/:id/resolve', (req,res) => {
   alarm.status='resolved'; alarm.resolved_at=new Date().toISOString(); save(saved); return res.json({ok:true,alarm});
 });
 
+app.post('/api/orders/:id/smart-route/approve', async (req,res) => {
+  const saved=state(); const order=getOrder(saved,req.params.id); if(!order)return res.status(404).json({error:'Encomenda não encontrada.'});
+  const snapshots=await managedPrinterSnapshots(saved); const routes=smartRouteOrder(saved,order,snapshots);
+  const requestedPart=clean(req.body?.part_id,80); const route=routes.find((item)=>item.part_id===requestedPart);
+  if(!route)return res.status(404).json({error:'Peça não encontrada no plano desta encomenda.'});
+  const requestedPrinter=Number(req.body?.printer_id); const options=[route.recommended,...route.alternatives].filter(Boolean);
+  const selected=requestedPrinter ? options.find((item)=>Number(item.printer_id)===requestedPrinter) : route.recommended;
+  if(!selected)return res.status(409).json({error:'Não existe uma rota compatível para a impressora selecionada.'});
+  const file=getLibraryFile(saved,selected.file_id); if(!file||file.active===false)return res.status(409).json({error:'O G-code recomendado deixou de estar disponível.'});
+  const piecesPerExecution=Math.max(1,Math.floor(Number(file.metadata?.quantity)||1)); const executions=Math.ceil(route.quantity/piecesPerExecution); const now=new Date().toISOString();
+  const status=selected.material_ready ? (['IDLE','ONLINE','FINISHED'].includes(selected.printer_status)?'QUEUED':'WAITING') : 'AWAITING_MATERIAL';
+  const existing=saved.jobs.find((job)=>job.order_id===order.id && job.part_id===route.part_id && !['CANCELLED','FINISHED','COMPLETED'].includes(String(job.status||'').toUpperCase()));
+  if(existing)return res.status(409).json({error:'Esta peça já tem um trabalho ativo nesta encomenda.'});
+  const job={id:nextId(saved.jobs),kind:'smart-route',name:`${order.id} · ${route.part_name}`,order_id:order.id,part_id:route.part_id,library_file_id:file.id,filename:file.original_name,printer_id:selected.printer_id,printer_model:file.printer_model,requested_quantity:route.quantity,pieces_per_execution:piecesPerExecution,executions,produced_quantity:0,required_material:clean(file.metadata?.material,80),required_color:clean(file.metadata?.color,80),status,dispatch_mode:'assisted',routing_score:selected.score,routing_reasons:selected.reasons,approved_at:now,created_at:now,updated_at:now};
+  saved.jobs.unshift(job); save(saved); res.status(201).json({job,message:`Rota aprovada: ${route.part_name} → ${selected.printer_name}. O trabalho ficou em ${status} e não será iniciado automaticamente.`});
+});
+app.patch('/api/jobs/:id/routing', async (req,res) => {
+  const saved=state(); const job=saved.jobs.find((item)=>Number(item.id)===Number(req.params.id)); if(!job)return res.status(404).json({error:'Trabalho não encontrado.'});
+  if(!['QUEUED','WAITING','AWAITING_MATERIAL'].includes(String(job.status||'').toUpperCase()))return res.status(409).json({error:'Só podes alterar a rota antes do início da impressão.'});
+  const printerId=Number(req.body?.printer_id); const printer=getManagedPrinter(saved,printerId); const file=getLibraryFile(saved,job.library_file_id);
+  if(!printer||!file||!printerSupportsProductionFile(printer,file))return res.status(409).json({error:'A impressora selecionada não é compatível com este ficheiro.'});
+  const snapshots=await managedPrinterSnapshots(saved); const snap=snapshots.find((item)=>Number(item.id)===printerId); const material=snap?gcodeMaterialCompatibility(saved,snap,file):{compatible:false};
+  job.printer_id=printerId; job.status=material.compatible ? (['IDLE','ONLINE','FINISHED'].includes(String(snap?.status||'').toUpperCase())?'QUEUED':'WAITING') : 'AWAITING_MATERIAL'; job.updated_at=new Date().toISOString(); save(saved); res.json(job);
+});
+
 app.get('/api/smart-queue', async (_req,res) => { const saved=state(); const snapshots=await managedPrinterSnapshots(saved); res.json({generated_at:new Date().toISOString(),items:smartQueue(saved,snapshots)}); });
 app.get('/api/orders/:id/smart-route', async (req,res) => { const saved=state(); const order=getOrder(saved,req.params.id); if(!order)return res.status(404).json({error:'Encomenda não encontrada.'}); const snapshots=await managedPrinterSnapshots(saved); res.json({order_id:order.id,routes:smartRouteOrder(saved,order,snapshots)}); });
 
