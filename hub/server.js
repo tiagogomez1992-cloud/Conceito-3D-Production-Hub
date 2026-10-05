@@ -2104,7 +2104,7 @@ app.post('/api/orders/:id/complete', async (req, res) => {
   item.status = 'completed'; item.updated_at = new Date().toISOString(); save(saved); res.json({ order: item, consumed_grams: grams || null, consumed_spools: consumed, gcode_plan: plan });
 });
 
-function streamBambuMjpeg(printer, req, res) {
+function streamBambuMjpeg(printer, req, res, snapshotOnly = false) {
   const host = printerHost(printer);
   const accessCode = clean(printer.api_key, 200);
   if (!host || !accessCode) {
@@ -2128,11 +2128,14 @@ function streamBambuMjpeg(printer, req, res) {
       auth.write(accessCode, 48, 32, 'ascii');
       socket.write(auth);
       authenticated = true;
-      res.status(200);
-      res.set('Content-Type', `multipart/x-mixed-replace; boundary=${boundary}`);
-      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-      res.set('Pragma', 'no-cache');
-      res.flushHeaders();
+      if (!snapshotOnly) {
+        res.status(200);
+        res.set('Content-Type', `multipart/x-mixed-replace; boundary=${boundary}`);
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.set('Pragma', 'no-cache');
+        res.set('X-Accel-Buffering', 'no');
+        res.flushHeaders();
+      }
     });
     socket.setTimeout(12000);
     socket.on('timeout', () => fail('A câmara Bambu não respondeu a tempo.'));
@@ -2147,6 +2150,15 @@ function streamBambuMjpeg(printer, req, res) {
         const jpeg = buffer.subarray(16, 16 + size);
         buffer = buffer.subarray(16 + size);
         if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8 || jpeg[jpeg.length - 2] !== 0xff || jpeg[jpeg.length - 1] !== 0xd9) continue;
+        if (snapshotOnly) {
+          res.status(200);
+          res.set('Content-Type', 'image/jpeg');
+          res.set('Content-Length', String(jpeg.length));
+          res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+          res.end(jpeg);
+          close();
+          return;
+        }
         res.write(`--${boundary}\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpeg.length}\r\n\r\n`);
         res.write(jpeg);
         res.write('\r\n');
@@ -2182,7 +2194,7 @@ app.get('/api/printers/:id/camera', async (req, res) => {
   const saved = state(); const printer = getManagedPrinter(saved, req.params.id);
   if (!printer) return res.status(404).json({ error: 'Impressora não encontrada.' });
   if (clean(printer.type, 40).toLowerCase() === 'bambu') {
-    streamBambuMjpeg(printer, req, res);
+    streamBambuMjpeg(printer, req, res, req.query.snapshot === '1');
     return;
   }
   const camera = printerCameraUrl(printer);
