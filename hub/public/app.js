@@ -428,18 +428,20 @@ async function update() { $('refresh').disabled = true; try { const data = await
 
 $('refresh').onclick = update;
 $('discover-printers').onclick = async () => { const button = $('discover-printers'); button.disabled = true; button.textContent = 'A analisar…'; try { renderDiscovery(await api('/api/printers/discover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subnet: $('discovery-subnet').value }) })); } catch (error) { toast(error.message, 'error'); } finally { button.disabled = false; button.textContent = 'Analisar rede local'; } };
+const mainViewRoutes=Object.freeze({overview:'/',orders:'/encomendas',files:'/pecas',customers:'/clientes',production:'/producao',printers:'/impressoras',spools:'/filamentos',history:'/historico',system:'/sistema'});
+function mainViewFromPath(pathname=window.location.pathname) {
+  const normalized=pathname.length>1?pathname.replace(/\/$/,''):pathname;
+  return Object.entries(mainViewRoutes).find(([,path])=>path===normalized)?.[0]||null;
+}
 function activateMainView(viewId, updateUrl = true) {
   const tab=document.querySelector(`.tab[data-view="${CSS.escape(viewId)}"]`); const view=document.getElementById(viewId);
   if(!tab||!view)return false;
   document.querySelectorAll('.tab').forEach((item)=>item.classList.toggle('active',item===tab));
   document.querySelectorAll('.view').forEach((item)=>item.classList.toggle('active',item===view));
-  try { sessionStorage.setItem('c3d-active-view',viewId); } catch {}
-  if(updateUrl && !isPrinterEditorPage() && !isProjectEditorPage()) {
-    const path=viewId==='printers'?'/impressoras':viewId==='overview'?'/' : `/?view=${encodeURIComponent(viewId)}`;
-    history.replaceState({view:viewId},'',path);
-  }
+  if(updateUrl && !isPrinterEditorPage() && !isProjectEditorPage()) history.pushState({view:viewId},'',mainViewRoutes[viewId]||'/');
   return true;
 }
+window.addEventListener('popstate',()=>{ const view=mainViewFromPath(); if(view)activateMainView(view,false); });
 document.querySelectorAll('.tab').forEach((tab)=>tab.onclick=()=>activateMainView(tab.dataset.view));
 renderOrderRemovalButtons = function renderActiveOrderRemovalButtons() {
   document.querySelectorAll('#order-board .order-card').forEach((card, index) => {
@@ -1287,10 +1289,10 @@ const initialPrinterListPage = /^\/impressoras\/?$/.test(window.location.pathnam
 if (initialProjectEditorId) showProjectEditorPage(initialProjectEditorId);
 else if (initialPrinterEditorId) showPrinterEditorPage(initialPrinterEditorId);
 else {
-  const requestedView=new URLSearchParams(window.location.search).get('view');
-  let savedView=''; try { savedView=sessionStorage.getItem('c3d-active-view')||''; } catch {}
-  const initialView=initialPrinterListPage?'printers':requestedView||savedView||'overview';
+  const legacyView=new URLSearchParams(window.location.search).get('view');
+  const initialView=initialPrinterListPage?'printers':mainViewFromPath()||legacyView||'overview';
   activateMainView(initialView,false) || activateMainView('overview',false);
+  if(legacyView && mainViewRoutes[initialView]) history.replaceState({view:initialView},'',mainViewRoutes[initialView]);
 }
 populateFilaments(); refreshCustomers(); refreshFiles(); update().finally(async () => {
   renderOverviewFromCurrent();
