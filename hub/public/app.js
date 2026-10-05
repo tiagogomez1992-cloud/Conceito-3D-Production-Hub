@@ -193,12 +193,24 @@ function printerCameraAddress(printer) {
 function printerCameraMarkup(printer) {
   const camera = printerCameraAddress(printer);
   if (!camera) return `<article class="printer-camera-panel camera-empty"><div class="printer-camera-heading"><div><p class="eyebrow">LIVE VIEW</p><h2>Câmara da impressora</h2></div><span class="integration-label">Não configurada</span></div><div class="printer-camera-placeholder"><strong>Sem stream configurada</strong><p>Adiciona o URL da câmara nas definições desta impressora.</p></div></article>`;
-  return `<article class="printer-camera-panel"><div class="printer-camera-heading"><div><p class="eyebrow">LIVE VIEW</p><h2>Câmara da impressora</h2></div><div class="printer-camera-actions"><span class="integration-label">Em direto</span><a class="compact secondary" href="${escape(camera)}" target="_blank" rel="noopener noreferrer">Abrir stream</a></div></div><div class="printer-camera-frame"><img src="${escape(camera)}" alt="Live view de ${escape(printer.name || 'impressora')}" loading="eager" referrerpolicy="no-referrer"><div class="printer-camera-fallback"><strong>A aguardar imagem…</strong><small>Se a câmara não aparecer, confirma o URL e se este dispositivo consegue aceder à impressora.</small></div></div></article>`;
+  const bambu = String(printer?.type || '').toLowerCase() === 'bambu';
+  const image = bambu ? `${camera}?snapshot=1&t=${Date.now()}` : camera;
+  return `<article class="printer-camera-panel"><div class="printer-camera-heading"><div><p class="eyebrow">LIVE VIEW</p><h2>Câmara da impressora</h2></div><div class="printer-camera-actions"><span class="integration-label">Em direto</span><a class="compact secondary" href="${escape(camera)}" target="_blank" rel="noopener noreferrer">Abrir stream</a></div></div><div class="printer-camera-frame"><img src="${escape(image)}" ${bambu ? `data-bambu-camera="${escape(camera)}"` : ''} alt="Live view de ${escape(printer.name || 'impressora')}" loading="eager" referrerpolicy="no-referrer"><div class="printer-camera-fallback"><strong>A aguardar imagem…</strong><small>Se a câmara não aparecer, confirma o URL e se este dispositivo consegue aceder à impressora.</small></div></div></article>`;
 }
+// Bambu snapshots are refreshed after the workspace is painted.
 function printerTypeOptions(selected) {
   const types = [['klipper', 'Klipper / Moonraker'], ['octoprint', 'OctoPrint'], ['prusa', 'PrusaLink'], ['bambu', 'Bambu Lab LAN'], ['creality', 'Creality LAN'], ['anycubic', 'Anycubic LAN'], ['elegoo-centauri', 'Elegoo SDCP / Centauri'], ['elegoo-centauri2', 'Elegoo / Centauri 2']];
   if (selected && !types.some(([value]) => value === selected)) types.unshift([selected, selected]);
   return types.map(([value, label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('');
+}
+let bambuCameraRefreshTimer = null;
+function refreshBambuCameraSnapshot() {
+  clearTimeout(bambuCameraRefreshTimer);
+  const image = document.querySelector('img[data-bambu-camera]');
+  if (!image) return;
+  const camera = image.dataset.bambuCamera;
+  image.src = `${camera}?snapshot=1&t=${Date.now()}`;
+  bambuCameraRefreshTimer = setTimeout(refreshBambuCameraSnapshot, 1500);
 }
 function setupPrinterWorkspace() {
   const printerGrid = $('printer-grid');
@@ -1219,3 +1231,13 @@ populateFilaments(); refreshCustomers(); refreshFiles(); update().finally(async 
     try { await refreshSelectedProject(); } catch (error) { toast(error.message, 'error'); }
   }
 }); setInterval(() => update().finally(renderOverviewFromCurrent), 15000);
+
+setInterval(() => {
+  const image = document.querySelector('img[data-bambu-camera]');
+  if (!image || image.dataset.refreshing === '1') return;
+  image.dataset.refreshing = '1';
+  const camera = image.dataset.bambuCamera;
+  const done = () => { image.dataset.refreshing = '0'; };
+  image.onload = done; image.onerror = done;
+  image.src = `${camera}?snapshot=1&t=${Date.now()}`;
+}, 1800);
