@@ -1293,3 +1293,25 @@ body{background:var(--ops-bg)}
 .app-footer{display:flex;justify-content:space-between;gap:16px;margin-top:24px;padding:14px 2px 0;border-top:1px solid var(--ops-line);color:var(--ops-muted);font-size:.68rem}
 .app-footer code{font:inherit;color:#b9c5d3}
 @media(max-width:700px){.ops-shell{padding:126px 14px 24px}.ops-shell>header{position:fixed;inset:0 0 auto 0;width:auto;height:auto;padding:14px;border-right:0;border-bottom:1px solid #2d3236}.ops-nav{position:fixed;inset:70px 0 auto 0;top:70px;width:auto;height:48px;padding:5px 10px;flex-direction:row;overflow-x:auto;overflow-y:hidden;background:#0b0f14f2;border-bottom:1px solid var(--ops-line)}.ops-nav .tab{width:auto;white-space:nowrap}.app-footer{flex-direction:column;gap:4px}}
+
+/* UI v0.6.1 — Smart Queue decision console */
+.overview-queue-head{display:none!important}
+#overview-order-queue{display:grid;gap:9px}
+.smart-queue-card{border:1px solid var(--ops-line);border-radius:9px;background:#121922;overflow:hidden}
+.smart-queue-card.urgent{border-left:3px solid var(--ops-bad)}
+.smart-queue-card>header{position:static!important;width:auto!important;display:flex!important;justify-content:space-between;align-items:center;gap:12px;padding:10px 12px!important;border:0!important;border-bottom:1px solid var(--ops-line)!important;background:#161f2a!important}
+.smart-queue-card>header>div:first-child{display:flex;align-items:center;gap:8px;min-width:0}
+.smart-queue-card>header strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.83rem}
+.queue-ref{font-size:.68rem;color:var(--ops-muted);font-weight:800}
+.queue-badges{display:flex;gap:5px;align-items:center;flex:none}
+.queue-badges span,.queue-badges em{padding:4px 6px;border-radius:5px;background:#222d3a;color:#aebaca;font-size:.62rem;font-style:normal}
+.queue-badges em.high{color:#ffd071;background:rgba(245,185,66,.12)}.queue-badges em.urgent{color:#ff9696;background:rgba(239,100,100,.13)}
+.queue-health{display:flex;gap:16px;padding:7px 12px;color:var(--ops-muted);font-size:.66rem;border-bottom:1px solid var(--ops-line)}
+.queue-health b{color:#e8edf4}
+.route-decisions{display:grid}
+.route-decision{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:center;padding:9px 12px;border-bottom:1px solid #202a36}
+.route-decision:last-child{border-bottom:0}.route-main{display:grid;gap:2px;min-width:0}.route-main strong{font-size:.75rem}.route-main small{font-size:.65rem;color:#a7b2c0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.route-main .route-reason{color:#778596}
+.route-meta{display:grid;justify-items:end;gap:2px}.route-meta span{font-size:.6rem;color:var(--ops-good)}.route-decision.waiting .route-meta span{color:var(--ops-warn)}.route-meta b{font-size:.63rem;color:var(--ops-muted)}
+.route-decision.blocked{grid-template-columns:1fr auto}.route-decision.blocked>div{display:grid;gap:2px}.route-decision.blocked small{font-size:.65rem;color:var(--ops-muted)}.route-decision.blocked>span{font-size:.62rem;color:var(--ops-bad)}
+.smart-route-approve{border:1px solid #365f4d!important;background:rgba(53,200,137,.11)!important;color:#70e0ad!important;border-radius:6px!important;padding:6px 8px!important;font-size:.63rem!important;font-weight:800!important}
+@media(max-width:720px){.route-decision{grid-template-columns:1fr auto}.route-decision .smart-route-approve{grid-column:1/-1}.queue-health{gap:9px}.smart-queue-card>header{align-items:flex-start!important}.queue-badges{flex-direction:column;align-items:flex-end}}
