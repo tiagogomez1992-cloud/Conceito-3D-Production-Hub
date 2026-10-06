@@ -1294,7 +1294,7 @@ function anycubicFirst(flat, keys, fallback = null) {
 }
 async function anycubicStockCredentials(printer) {
   const host = printerHost(printer);
-  const infoResponse = await client.get(\`http://\${host}:18910/info\`, { timeout: 4000 });
+  const infoResponse = await client.get(`http://${host}:18910/info`, { timeout: 4000 });
   const info = infoResponse.data?.data || infoResponse.data;
   const token = String(info?.token || '');
   if (token.length < 32 || !info?.ctrlInfoUrl) throw new Error('Resposta LAN Anycubic inválida.');
@@ -1303,7 +1303,7 @@ async function anycubicStockCredentials(printer) {
   const sign = md5Hex(md5Hex(token.slice(0, 16)) + ts + nonce);
   const ctrlResponse = await client.post(info.ctrlInfoUrl, null, { timeout: 5000, params: { ts, nonce, sign, did: crypto.randomUUID().replace(/-/g, '').toUpperCase() } });
   const ctrl = ctrlResponse.data;
-  if (Number(ctrl?.code) !== 200 || !ctrl?.data?.info || !ctrl?.data?.token) throw new Error(\`Handshake Anycubic recusado (code \${ctrl?.code ?? '?'})\`);
+  if (Number(ctrl?.code) !== 200 || !ctrl?.data?.info || !ctrl?.data?.token) throw new Error(`Handshake Anycubic recusado (code ${ctrl?.code ?? '?'})`);
   const key = Buffer.from(token.slice(16, 32)); const iv = Buffer.from(String(ctrl.data.token));
   const decipher = crypto.createDecipheriv('aes-128-cbc', key, iv);
   const decrypted = Buffer.concat([decipher.update(Buffer.from(ctrl.data.info, 'base64')), decipher.final()]).toString('utf8');
@@ -1321,17 +1321,17 @@ async function anycubicStockSession(printer, commands = []) {
     const finish = (error) => { if (settled) return; settled = true; clearTimeout(timer); try { connection?.end(true); } catch {} if (error) reject(error); else { if (!commands.length) anycubicStockCache.set(cacheKey, { received_at:Date.now(), state }); resolve(state); } };
     const timer = setTimeout(() => finish(commands.length ? null : new Error('Sem resposta MQTT da Kobra X.')), commands.length ? 1200 : 3500);
     try {
-      connection = mqtt.connect(\`mqtts://\${credentials.host}:9883\`, { username:credentials.username, password:credentials.password, cert:credentials.cert, key:credentials.key, rejectUnauthorized:false, reconnectPeriod:0, connectTimeout:4000, clean:true, clientId:\`c3dkx_\${crypto.randomBytes(5).toString('hex')}\` });
-      const base = \`anycubic/anycubicCloud/v1\`; const web = \`\${base}/web/printer/\${credentials.typeId}/\${credentials.printerId}\`;
+      connection = mqtt.connect(`mqtts://${credentials.host}:9883`, { username:credentials.username, password:credentials.password, cert:credentials.cert, key:credentials.key, rejectUnauthorized:false, reconnectPeriod:0, connectTimeout:4000, clean:true, clientId:`c3dkx_${crypto.randomBytes(5).toString('hex')}` });
+      const base = `anycubic/anycubicCloud/v1`; const web = `${base}/web/printer/${credentials.typeId}/${credentials.printerId}`;
       connection.once('connect', () => {
-        connection.subscribe(\`\${base}/printer/+/+/\${credentials.printerId}/#\`);
-        connection.subscribe(\`\${base}/printer/public/\${credentials.typeId}/\${credentials.printerId}/#\`);
+        connection.subscribe(`${base}/printer/+/+/${credentials.printerId}/#`);
+        connection.subscribe(`${base}/printer/public/${credentials.typeId}/${credentials.printerId}/#`);
         if (commands.length) {
-          for (const command of commands) connection.publish(\`\${web}/\${command.type}\`, JSON.stringify(anycubicPayload(command.type, command.action, command.data)));
+          for (const command of commands) connection.publish(`${web}/${command.type}`, JSON.stringify(anycubicPayload(command.type, command.action, command.data)));
           setTimeout(() => finish(), 450);
           return;
         }
-        for (const [type, action] of [['status','query'],['info','query'],['tempature','query'],['fan','query'],['peripherie','query'],['multiColorBox','getInfo']]) connection.publish(\`\${web}/\${type}\`, JSON.stringify(anycubicPayload(type, action)));
+        for (const [type, action] of [['status','query'],['info','query'],['tempature','query'],['fan','query'],['peripherie','query'],['multiColorBox','getInfo']]) connection.publish(`${web}/${type}`, JSON.stringify(anycubicPayload(type, action)));
       });
       connection.on('message', (_topic, payload) => { try { const parsed = JSON.parse(payload.toString('utf8')); Object.assign(state, anycubicFlatten(parsed)); } catch {} });
       connection.once('error', finish);
