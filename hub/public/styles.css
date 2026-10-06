@@ -1342,3 +1342,9 @@ body.printer-editor-page .printer-danger-zone{grid-column:1/-1}
 .ops-overview .overview-progress{margin:0 9px}
 .ops-overview .overview-printer-footer{padding:6px 9px}
 .ops-overview .overview-quick-actions{padding:6px 9px 8px}
+
+/* UI v0.6.3 — live telemetry on fleet cards */
+.overview-telemetry{display:flex;gap:6px;padding:0 9px 6px}
+.overview-telemetry span{flex:1;display:flex;justify-content:space-between;align-items:center;padding:5px 6px;border:1px solid #263342;border-radius:5px;background:#0e151d;color:#738294;font-size:8px;font-weight:800;letter-spacing:.06em}
+.overview-telemetry b{color:#dce6f2;font-size:10px;letter-spacing:0}
+.overview-printer-card.printing .overview-telemetry b{color:#70e0ad}
