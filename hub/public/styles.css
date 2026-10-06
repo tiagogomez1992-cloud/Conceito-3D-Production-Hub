@@ -1219,3 +1219,57 @@ body.printer-editor-page .printer-workspace { margin-top:7px; }
 .overview-quick-actions{display:flex;gap:8px;margin-top:10px}.overview-quick-actions button,.alarm-actions button{border:1px solid var(--line,#d9dee7);background:transparent;border-radius:8px;padding:6px 9px;font:inherit;cursor:pointer}.alarm-item{display:flex;align-items:center;justify-content:space-between;gap:10px}.alarm-open{display:flex;align-items:center;gap:10px;flex:1;text-align:left;background:none;border:0;color:inherit}.alarm-actions{display:flex;gap:6px;flex-wrap:wrap}.alarm-item.acknowledged{opacity:.72}
 
 .smart-route-row{grid-template-columns:minmax(100px,.7fr) minmax(150px,1.2fr) minmax(220px,1.6fr) auto}.smart-route-approve{grid-column:2/-1;justify-self:start;border:1px solid var(--line,#d9dee7);background:transparent;border-radius:8px;padding:6px 10px;font:inherit;cursor:pointer}
+
+/* Operations UI — dense fleet-control layout inspired by modern print-farm consoles */
+:root{--ops-bg:#0b0f14;--ops-panel:#111720;--ops-panel-2:#151d28;--ops-line:#253142;--ops-text:#f3f6fa;--ops-muted:#8e9aaa;--ops-accent:#6ea8fe;--ops-good:#35c889;--ops-warn:#f5b942;--ops-bad:#ef6464}
+body{background:var(--ops-bg)}
+.ops-shell{max-width:none;margin:0;min-height:100vh;padding:0 22px 28px;color:var(--ops-text)}
+.ops-shell>header{position:sticky;top:0;z-index:40;margin:0 -22px;padding:12px 22px;background:rgba(11,15,20,.94);backdrop-filter:blur(14px);border-bottom:1px solid var(--ops-line)}
+.ops-nav{position:sticky;top:65px;z-index:35;margin:0 -22px;padding:8px 22px;background:rgba(11,15,20,.94);border-bottom:1px solid var(--ops-line);gap:5px;overflow-x:auto}
+.ops-nav .tab{border:0;background:transparent;padding:9px 13px;border-radius:7px;color:var(--ops-muted);font-weight:650;white-space:nowrap}
+.ops-nav .tab.active{background:#1b2634;color:#fff;box-shadow:inset 0 0 0 1px #304057}
+.ops-overview{padding-top:18px}
+.ops-overview .hero{min-height:0;padding:10px 0 14px;align-items:end}
+.ops-overview .hero h1{font-size:clamp(24px,3vw,34px);letter-spacing:-.035em;margin:2px 0}
+.ops-overview .hero .sub{color:var(--ops-muted);margin:0}
+.ops-overview .farm-toolbar{background:var(--ops-panel);border:1px solid var(--ops-line);border-radius:10px;padding:8px;margin-bottom:10px}
+.ops-overview .farm-filters{gap:5px}
+.ops-overview .farm-filters button{border-radius:7px;padding:7px 11px;background:transparent;border:1px solid transparent;color:var(--ops-muted)}
+.ops-overview .farm-filters button.active{background:#202c3a;border-color:#34465e;color:#fff}
+.ops-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0 0 10px}
+.ops-stats article{min-height:82px;padding:13px 15px;border:1px solid var(--ops-line);background:var(--ops-panel);border-radius:10px}
+.ops-stats article strong{font-size:26px;line-height:1.05}
+.ops-stats article span,.ops-stats article small{color:var(--ops-muted)}
+.ops-grid{display:grid;grid-template-columns:minmax(0,2.2fr) minmax(300px,.8fr);gap:10px;align-items:start}
+.ops-grid .overview-printers-panel{grid-column:1}
+.ops-grid .overview-queue-panel{grid-column:1}
+.ops-grid .overview-sidebar{grid-column:2;grid-row:1/span 2}
+.ops-overview .panel,.ops-overview .alarm-center,.ops-overview .camera-wall{background:var(--ops-panel);border:1px solid var(--ops-line);border-radius:10px;box-shadow:none}
+.ops-overview .panel-heading{padding-bottom:9px;border-bottom:1px solid var(--ops-line);margin-bottom:9px}
+.ops-overview .printer-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(245px,1fr));gap:8px}
+.ops-overview .overview-printer-card{min-width:0;padding:0;overflow:hidden;background:var(--ops-panel-2);border:1px solid var(--ops-line);border-top:3px solid #536274;border-radius:9px;box-shadow:none;transition:transform .12s ease,border-color .12s ease}
+.ops-overview .overview-printer-card:hover{transform:translateY(-1px);border-color:#52677f}
+.ops-overview .overview-printer-card.printing{border-top-color:var(--ops-good)}
+.ops-overview .overview-printer-card.online{border-top-color:var(--ops-accent)}
+.ops-overview .overview-printer-card.warning{border-top-color:var(--ops-warn)}
+.ops-overview .overview-printer-card.offline{border-top-color:var(--ops-bad);opacity:.82}
+.ops-overview .overview-printer-title{padding:10px 11px 7px}
+.ops-overview .overview-printer-title strong{font-size:14px}
+.ops-overview .overview-printer-title small{font-size:11px;color:var(--ops-muted)}
+.ops-overview .overview-printer-preview{height:112px;border-radius:0;background:#080b0f}
+.ops-overview .overview-printer-preview img{width:100%;height:100%;object-fit:cover}
+.ops-overview .overview-printer-card>p{font-size:12px;margin:8px 11px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ops-overview .overview-progress{height:4px;margin:0 11px;background:#293441;border-radius:5px}
+.ops-overview .overview-progress span{background:var(--ops-good)}
+.ops-overview .overview-printer-footer{padding:7px 11px 8px;color:var(--ops-muted)}
+.ops-overview .overview-quick-actions{padding:7px 11px 10px;border-top:1px solid var(--ops-line);gap:6px}
+.ops-overview .overview-quick-actions button{font-size:11px;padding:5px 8px;border-radius:6px;background:#1c2734;border:1px solid #314157;color:#dce7f4}
+.ops-alarm-center{margin:0 0 10px;padding:12px}
+.ops-overview .alarm-list{max-height:180px;overflow:auto}
+.ops-overview .alarm-row{padding:8px 9px;border-radius:7px}
+.ops-overview .overview-queue-row{padding:8px 6px;border-bottom:1px solid var(--ops-line);font-size:12px}
+.ops-overview .overview-side-panel{padding:4px}
+.ops-overview .camera-wall-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+@media(max-width:1050px){.ops-grid{grid-template-columns:1fr}.ops-grid .overview-sidebar{grid-column:1;grid-row:auto}.ops-stats{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:650px){.ops-shell{padding:0 10px 18px}.ops-shell>header,.ops-nav{margin-left:-10px;margin-right:-10px;padding-left:10px;padding-right:10px}.ops-nav{top:61px}.ops-stats{grid-template-columns:1fr 1fr}.ops-overview .printer-list{grid-template-columns:1fr 1fr}.ops-overview .overview-printer-preview{height:90px}.ops-overview .camera-wall-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:430px){.ops-overview .printer-list{grid-template-columns:1fr}.ops-stats{grid-template-columns:1fr 1fr}}
