@@ -1358,7 +1358,7 @@ async function anycubicMoonrakerAvailable(printer) {
   } catch { return false; }
 }
 async function anycubicMoonrakerStatus(printer) {
-  const response = await client.get(`http://${printerHost(printer)}:7125/printer/objects/query?print_stats&virtual_sdcard&toolhead&extruder&heater_bed`, { timeout: 3500 });
+  const response = await client.get(`http://${printerHost(printer)}:7125/printer/objects/query?print_stats&virtual_sdcard&toolhead&extruder&heater_bed&webhooks`, { timeout: 3500 });
   const status = response.data?.result?.status || {};
   return { status, stats:status.print_stats || {}, virtualSd:status.virtual_sdcard || {} };
 }
@@ -1410,7 +1410,7 @@ async function directPrinterStatus(printer, value) {
       if (await anycubicMoonrakerAvailable(printer)) {
         const moon = await anycubicMoonrakerStatus(printer);
         const reportedSlots = await moonrakerReportedMaterialSlots({ ...printer, url:`http://${printerHost(printer)}:7125` });
-        return { ...printer, control_backend:'moonraker', status:canonicalState(moon.stats.state), job_name:moon.stats.filename || null, job_progress:Number(moon.virtualSd.progress || 0), job_time_remaining:null, temperatures:{ nozzle:{actual:Number(moon.status.extruder?.temperature || 0),target:Number(moon.status.extruder?.target || 0)}, bed:{actual:Number(moon.status.heater_bed?.temperature || 0),target:Number(moon.status.heater_bed?.target || 0)} }, material_profile:printerMaterialProfile(value,printer,reportedSlots), checked_at:new Date().toISOString() };
+        const technicalStatus=canonicalState(moon.stats.state); const faultMessage=clean(moon.stats.message || moon.status.webhooks?.state_message,500); const webhookState=String(moon.status.webhooks?.state||''); const fault=/error|shutdown|fault|tangle|tangled|filament|material/i.test(faultMessage) || /error|shutdown/i.test(webhookState); return { ...printer, control_backend:'moonraker', status:fault?'ERROR':technicalStatus, technical_status:technicalStatus, status_message:faultMessage||null, job_name:moon.stats.filename || null, job_progress:Number(moon.virtualSd.progress || 0), job_time_remaining:null, temperatures:{ nozzle:{actual:Number(moon.status.extruder?.temperature || 0),target:Number(moon.status.extruder?.target || 0)}, bed:{actual:Number(moon.status.heater_bed?.temperature || 0),target:Number(moon.status.heater_bed?.target || 0)} }, alerts:fault?[{type:'ANYCUBIC',code:faultMessage||webhookState||'ERROR'}]:[], material_profile:printerMaterialProfile(value,printer,reportedSlots), checked_at:new Date().toISOString() };
       }
       const raw = await anycubicStockSession(printer); const stock = anycubicStockNormalized(raw);
       return { ...printer, control_backend:'anycubic-stock', ...stock, alerts:stock.error_code && Number(stock.error_code) !== 0 ? [{type:'ANYCUBIC',code:String(stock.error_code)}] : [], material_profile:localProfile(), checked_at:new Date().toISOString() };
