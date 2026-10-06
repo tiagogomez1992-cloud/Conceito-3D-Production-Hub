@@ -1358,3 +1358,6 @@ body.printer-editor-page .printer-danger-zone{grid-column:1/-1}
 .fleet-state.printing{min-width:76px}
 .overview-quick-actions button{transition:border-color .15s,background .15s,color .15s}
 .overview-quick-actions button:hover{border-color:#54779f;background:#182535;color:#fff}
+
+/* Rinkhals/firmware fault visibility */
+.overview-fault-message{display:flex;align-items:center;gap:6px;margin:7px 9px 2px;padding:6px 7px;border:1px solid rgba(239,100,100,.35);border-radius:5px;background:rgba(239,100,100,.10);color:#ffaaaa;font-size:9px;font-weight:800}.overview-fault-message b{display:grid;place-items:center;width:15px;height:15px;border-radius:50%;background:#ef6464;color:#111}.overview-fault-message span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
