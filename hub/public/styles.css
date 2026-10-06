@@ -1315,3 +1315,30 @@ body{background:var(--ops-bg)}
 .route-decision.blocked{grid-template-columns:1fr auto}.route-decision.blocked>div{display:grid;gap:2px}.route-decision.blocked small{font-size:.65rem;color:var(--ops-muted)}.route-decision.blocked>span{font-size:.62rem;color:var(--ops-bad)}
 .smart-route-approve{border:1px solid #365f4d!important;background:rgba(53,200,137,.11)!important;color:#70e0ad!important;border-radius:6px!important;padding:6px 8px!important;font-size:.63rem!important;font-weight:800!important}
 @media(max-width:720px){.route-decision{grid-template-columns:1fr auto}.route-decision .smart-route-approve{grid-column:1/-1}.queue-health{gap:9px}.smart-queue-card>header{align-items:flex-start!important}.queue-badges{flex-direction:column;align-items:flex-end}}
+
+/* UI v0.6.2 — compact machine console */
+body.printer-editor-page .printer-workspace{grid-template-columns:minmax(0,1.35fr) minmax(330px,.85fr);gap:12px;align-items:start}
+body.printer-editor-page .printer-console-summary{grid-column:1/-1;padding:16px 18px}
+body.printer-editor-page .printer-console-header h2{font-size:clamp(1.45rem,2.4vw,2rem);margin:2px 0 4px}
+body.printer-editor-page .printer-live-grid{margin-top:13px;gap:7px}
+body.printer-editor-page .printer-live-grid>div{padding:9px 11px}
+body.printer-editor-page .printer-live-grid strong{margin:4px 0 2px;font-size:.82rem}
+body.printer-editor-page .printer-job-progress{height:5px;margin-top:10px}
+body.printer-editor-page .printer-camera-panel{grid-column:1;width:100%;max-width:none;margin:0;box-shadow:none}
+body.printer-editor-page .printer-camera-frame{aspect-ratio:16/9;min-height:0;max-height:430px}
+body.printer-editor-page .printer-control-panel{grid-column:2;width:100%;max-width:none;margin:0;box-shadow:none;align-self:stretch}
+body.printer-editor-page .printer-controls-grid{grid-template-columns:1fr;gap:12px}
+body.printer-editor-page .axis-controls{grid-template-columns:1fr;gap:8px}
+body.printer-editor-page .temperature-controls{gap:8px}
+body.printer-editor-page .temperature-controls form{padding:9px}
+body.printer-editor-page .printer-secondary-panel{grid-column:1/-1}
+body.printer-editor-page .printer-danger-zone{grid-column:1/-1}
+@media(max-width:1050px){body.printer-editor-page .printer-workspace{grid-template-columns:1fr}body.printer-editor-page .printer-console-summary,body.printer-editor-page .printer-camera-panel,body.printer-editor-page .printer-control-panel,body.printer-editor-page .printer-secondary-panel,body.printer-editor-page .printer-danger-zone{grid-column:1}}
+/* denser fleet cards */
+.ops-overview .printer-list{grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:7px}
+.ops-overview .overview-printer-preview{height:104px}
+.ops-overview .overview-printer-title{padding:8px 9px 6px}
+.ops-overview .overview-printer-card>p{margin:6px 9px 5px;font-size:11px}
+.ops-overview .overview-progress{margin:0 9px}
+.ops-overview .overview-printer-footer{padding:6px 9px}
+.ops-overview .overview-quick-actions{padding:6px 9px 8px}
