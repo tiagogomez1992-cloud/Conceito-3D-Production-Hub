@@ -1269,7 +1269,20 @@ function renderOverviewFromCurrent() {
   if (queue) {
     const orders = latest.orders.filter((order) => order.status !== 'completed').slice(0, 5);
     const routing=new Map((latest.smartQueue||[]).map((item)=>[String(item.order_id),item]));
-    queue.innerHTML = orders.length ? orders.map((order) => { const plan=routing.get(String(order.id)); const routes=plan?.routes||[]; const ready=routes.filter((route)=>route.dispatchable).length; const best=routes.find((route)=>route.recommended)?.recommended; return `<div class="overview-queue-row smart-route-row"><span>${escape(order.id)}</span><strong>${escape(order.title)}</strong><small>${best?`→ ${escape(best.printer_name)} · score ${best.score}`:'Sem rota automática'}${routes.length?` · ${ready}/${routes.length} prontas`:''}</small><em class="${Number(order.priority)===2?'urgent':''}">${Number(order.priority)===2?'Urgente':escape(order.status||'Recebida')}</em>${routes.filter((route)=>route.recommended).slice(0,2).map((route)=>`<button type="button" class="smart-route-approve" data-route-order="${escape(order.id)}" data-route-part="${escape(route.part_id)}">Aprovar ${escape(route.part_name)} → ${escape(route.recommended.printer_name)}</button>`).join('')}</div>`; }).join('') : '<p class="empty overview-empty">Nao existem encomendas ativas na fila.</p>';
+    queue.innerHTML = orders.length ? orders.map((order) => {
+      const plan=routing.get(String(order.id)); const routes=plan?.routes||[];
+      const ready=routes.filter((route)=>route.dispatchable).length;
+      const blocked=Math.max(0,routes.length-ready);
+      const due=order.due_date ? new Date(order.due_date+'T00:00:00').toLocaleDateString('pt-PT',{day:'2-digit',month:'short'}) : 'Sem prazo';
+      const priority=Number(order.priority||0);
+      const routeCards=routes.slice(0,3).map((route)=>{
+        const rec=route.recommended;
+        if(!rec) return `<div class="route-decision blocked"><div><strong>${escape(route.part_name)}</strong><small>${escape(route.reason||'Sem impressora compatível')}</small></div><span>Bloqueado</span></div>`;
+        const reason=(rec.reasons||[]).slice(0,3).join(' · ');
+        return `<div class="route-decision ${route.dispatchable?'ready':'waiting'}"><div class="route-main"><strong>${escape(route.part_name)}</strong><small>${escape(rec.printer_name)} · ${escape(rec.file_name||'G-code')}</small><small class="route-reason">${escape(reason)}</small></div><div class="route-meta"><span>${rec.material_ready?'Material OK':'Trocar material'}</span><b>${rec.score} pts</b></div>${route.dispatchable?`<button type="button" class="smart-route-approve" data-route-order="${escape(order.id)}" data-route-part="${escape(route.part_id)}">Aprovar rota</button>`:''}</div>`;
+      }).join('');
+      return `<article class="smart-queue-card ${priority===2?'urgent':''}"><header><div><span class="queue-ref">#${escape(order.id)}</span><strong>${escape(order.title)}</strong></div><div class="queue-badges"><span>${due}</span><em class="${priority===2?'urgent':priority===1?'high':''}">${priority===2?'Urgente':priority===1?'Alta':'Normal'}</em></div></header><div class="queue-health"><span><b>${ready}</b> prontas</span><span><b>${blocked}</b> bloqueadas</span><span><b>${routes.length}</b> peças</span></div><div class="route-decisions">${routeCards||'<p class="empty overview-empty">Sem peças associadas à encomenda.</p>'}</div></article>`;
+    }).join('') : '<p class="empty overview-empty">Nao existem encomendas ativas na fila.</p>';
   }
 
   const alerts = $('overview-material-alerts');
