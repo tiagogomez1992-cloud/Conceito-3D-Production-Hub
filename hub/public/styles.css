@@ -1348,3 +1348,13 @@ body.printer-editor-page .printer-danger-zone{grid-column:1/-1}
 .overview-telemetry span{flex:1;display:flex;justify-content:space-between;align-items:center;padding:5px 6px;border:1px solid #263342;border-radius:5px;background:#0e151d;color:#738294;font-size:8px;font-weight:800;letter-spacing:.06em}
 .overview-telemetry b{color:#dce6f2;font-size:10px;letter-spacing:0}
 .overview-printer-card.printing .overview-telemetry b{color:#70e0ad}
+
+/* UI v0.6.4 — operational fleet status */
+.overview-job-line{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:6px 9px 5px;min-width:0}
+.overview-job-line p{margin:0!important;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px}
+.overview-job-line strong{flex:none;color:#91bdff;font-size:9px;font-weight:800}
+.overview-printer-card.printing .overview-job-line strong{color:#70e0ad}
+.fleet-state{min-width:58px;text-align:center}
+.fleet-state.printing{min-width:76px}
+.overview-quick-actions button{transition:border-color .15s,background .15s,color .15s}
+.overview-quick-actions button:hover{border-color:#54779f;background:#182535;color:#fff}
