@@ -1361,3 +1361,18 @@ body.printer-editor-page .printer-danger-zone{grid-column:1/-1}
 
 /* Rinkhals/firmware fault visibility */
 .overview-fault-message{display:flex;align-items:center;gap:6px;margin:7px 9px 2px;padding:6px 7px;border:1px solid rgba(239,100,100,.35);border-radius:5px;background:rgba(239,100,100,.10);color:#ffaaaa;font-size:9px;font-weight:800}.overview-fault-message b{display:grid;place-items:center;width:15px;height:15px;border-radius:50%;background:#ef6464;color:#111}.overview-fault-message span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* UI v0.6.6 — Mainsail-style print and extrusion controls */
+.job-control-strip{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:0 0 12px}
+.job-control-strip button,.extrusion-actions button{min-height:38px;border:1px solid #34485d;border-radius:6px;background:#14202c;color:#dce6f2;font-weight:800;cursor:pointer}
+.job-control-strip button:hover,.extrusion-actions button:hover{border-color:#6592bf;background:#1b2c3d}
+.job-control-strip button.danger{border-color:rgba(239,100,100,.5);background:rgba(239,100,100,.12);color:#ffaaaa}
+.extrusion-controls{display:grid;gap:10px;padding:10px;border:1px solid #263342;border-radius:7px;background:#0d141b}
+.extrusion-controls>div:first-child{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.extrusion-controls small{color:#738294}
+.extrusion-fields{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.extrusion-fields label{font-size:10px;color:#8b9aac}
+.extrusion-fields input{width:100%;margin-top:4px}
+.extrusion-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.extrusion-actions .secondary{background:#101820}
+@media(max-width:620px){.job-control-strip{grid-template-columns:1fr 1fr}.job-control-strip .danger{grid-column:1/-1}.extrusion-fields{grid-template-columns:1fr}}

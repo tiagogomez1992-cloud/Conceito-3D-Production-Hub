@@ -2582,6 +2582,36 @@ app.post('/api/printers/:id/control', async (req, res) => {
       if (!['ALL', 'X', 'Y', 'Z'].includes(axis)) return res.status(400).json({ error: 'Eixo de homing inválido.' });
       const script = axis === 'ALL' ? 'G28' : `G28 ${axis}`;
       if (printer.type === 'bambu') await bambuCommand(printer, script); else if (printer.type === 'creality') { const backend=await moonrakerBackend(printer,[7125,4408]); if(!backend)return res.status(409).json({error:'Moonraker Creality não acessível.'}); await moonrakerBackendGcode(printer,backend,script); } else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) { const commands=axis==='ALL'?[{type:'axis',action:'move',data:{axis:4,move_type:2,distance:0}},{type:'axis',action:'move',data:{axis:3,move_type:2,distance:0}}]:[{type:'axis',action:'move',data:{axis:axis==='Z'?3:4,move_type:2,distance:0}}]; await anycubicStockSession(printer,commands); } else await anycubicMoonrakerGcode(printer,script); } else await klipperGcode(printer, script);
+    } else if (['pause','resume','cancel'].includes(action)) {
+      const snapshot = await directPrinterStatus(printer, saved);
+      if (action === 'pause' && snapshot.status !== 'PRINTING') return res.status(409).json({ error:'A impressora não está a imprimir.' });
+      if (action === 'resume' && snapshot.status !== 'PAUSED') return res.status(409).json({ error:'A impressora não está em pausa.' });
+      if (action === 'cancel' && !['PRINTING','PAUSED','ERROR'].includes(snapshot.status)) return res.status(409).json({ error:'Não existe uma impressão ativa para cancelar.' });
+      if (printer.type === 'bambu') {
+        const command = action === 'pause' ? 'M25' : action === 'resume' ? 'M24' : 'M524';
+        await bambuCommand(printer, command);
+      } else {
+        let backend = null;
+        if (printer.type === 'klipper') backend = { base:printerEndpoint(printer,'',7125).replace(/\/$/,'') };
+        else if (printer.type === 'anycubic') { if (await anycubicMoonrakerAvailable(printer)) backend={base:`http://${printerHost(printer)}:7125`}; }
+        else if (printer.type === 'creality') backend=await moonrakerBackend(printer,[7125,4408]);
+        if (!backend) return res.status(409).json({ error:'Este firmware ainda não disponibiliza controlo de impressão pelo Hub.' });
+        const endpoint = action === 'pause' ? '/printer/print/pause' : action === 'resume' ? '/printer/print/resume' : '/printer/print/cancel';
+        await client.post(`${backend.base}${endpoint}`,null,{timeout:5000,headers:printer.api_key?{'X-Api-Key':printer.api_key}:{}});
+      }
+    } else if (action === 'extrude') {
+      const snapshot = await directPrinterStatus(printer, saved);
+      if (['PRINTING'].includes(snapshot.status)) return res.status(409).json({ error:'Extrusão manual bloqueada durante uma impressão.' });
+      const distance = Number(req.body?.distance); const speed = Number(req.body?.speed);
+      if (!Number.isFinite(distance) || distance === 0 || Math.abs(distance) > 100) return res.status(400).json({ error:'Distância de extrusão inválida (máx. 100 mm).' });
+      if (!Number.isFinite(speed) || speed < 1 || speed > 50) return res.status(400).json({ error:'Velocidade de extrusão inválida (1–50 mm/s).' });
+      const nozzle = Number(snapshot.temperatures?.nozzle?.actual || 0);
+      if (nozzle < 170) return res.status(409).json({ error:`Nozzle a ${Math.round(nozzle)} °C. Aquece para pelo menos 170 °C antes de extrudir/retrair.` });
+      const script = `M83\nG1 E${distance.toFixed(2)} F${Math.round(speed*60)}`;
+      if (printer.type === 'bambu') await bambuCommand(printer,script);
+      else if (printer.type === 'creality') { const backend=await moonrakerBackend(printer,[7125,4408]); if(!backend)return res.status(409).json({error:'Moonraker Creality não acessível.'}); await moonrakerBackendGcode(printer,backend,script); }
+      else if (printer.type === 'anycubic') { if (!(await anycubicMoonrakerAvailable(printer))) return res.status(409).json({error:'Extrusão manual requer Moonraker/Rinkhals nesta Anycubic.'}); await anycubicMoonrakerGcode(printer,script); }
+      else await klipperGcode(printer,script);
     } else if (action === 'temperature') {
       const heater = clean(req.body?.heater, 12).toLowerCase();
       const target = Number(req.body?.target);
