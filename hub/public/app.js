@@ -205,6 +205,23 @@ function printerTypeOptions(selected) {
   if (selected && !types.some(([value]) => value === selected)) types.unshift([selected, selected]);
   return types.map(([value, label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('');
 }
+let bambuCameraRefreshTimer = null;
+function refreshBambuCameraSnapshot() {
+  clearTimeout(bambuCameraRefreshTimer);
+  const image = document.querySelector('img[data-bambu-camera]');
+  if (!image) return;
+  const camera = image.dataset.bambuCamera;
+  image.src = `${camera}?snapshot=1&t=${Date.now()}`;
+  bambuCameraRefreshTimer = setTimeout(refreshBambuCameraSnapshot, 1500);
+}
+function setupPrinterWorkspace() {
+  const printerGrid = $('printer-grid');
+  if (!printerGrid || $('printer-workspace')) return;
+  const workspace = document.createElement('section');
+  workspace.className = 'printer-workspace hidden';
+  workspace.id = 'printer-workspace';
+  printerGrid.insertAdjacentElement('afterend', workspace);
+}
 function renderPrinterWorkspace() {
   const workspace = $('printer-workspace');
   if (!workspace || !selectedPrinterId) return;
@@ -408,36 +425,7 @@ function resetTemplateForm() {
 async function populateFilaments() { return []; }
 async function refreshCustomers() { try { customers = await api('/api/customers'); renderCustomers(); } catch { $('customer-grid').innerHTML = '<p class="empty">Não foi possível carregar os clientes.</p>'; } }
 async function refreshFiles() { try { libraryParts = await api('/api/library-parts'); libraryFiles = libraryParts.flatMap((part) => part.gcodes || []); renderFiles(); const fileInput = $('quick-dispatch-file'); if (fileInput && !fileInput.value) fileInput.innerHTML = quickDispatchFileOptions(); const profileOptions = $('quick-dispatch-model-options'); if (profileOptions) profileOptions.innerHTML = quickDispatchProfileOptions(); if (latest.orders.length) { renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); } } catch { $('file-grid').innerHTML = '<p class="empty">Não foi possível carregar a biblioteca.</p>'; } }
-async function update() {
-  const refresh=$('refresh'); if(refresh) refresh.disabled=true;
-  try {
-    const data=await api('/api/summary');
-    const printers=data?.printers?.items || [], spools=data?.spools?.items || [];
-    latest={printers,spools,stock:data?.spools?.stock||[],assignments:data?.assignments||{},orders:data?.production?.orders||[],alarms:data?.alarms||{active:[],history:[]},smartQueue:data?.smart_queue||[]};
-    const set=(id,value)=>{const el=$(id);if(el)el.textContent=value;};
-    set('printers-total',data?.printers?.total ?? printers.length);
-    set('printers-online',`${data?.printers?.online ?? printers.filter(p=>p.status!=='OFFLINE').length} online`);
-    set('printers-printing',data?.printers?.printing ?? printers.filter(p=>p.status==='PRINTING').length);
-    set('spools-total',data?.spools?.total ?? spools.length);
-    set('spools-low',data?.spools?.low ? `${data.spools.low} abaixo de 200 g` : 'Sem alertas');
-    const dot=$('live-dot'); if(dot)dot.className=data?.services?.productionHub===false?'warning':'connected';
-    set('last-update',`Atualizado às ${new Date(data?.generatedAt || Date.now()).toLocaleTimeString('pt-PT',{hour:'2-digit',minute:'2-digit'})}`);
-    set('system-host',data?.system?.hostname || 'Servidor');
-    set('system-up',`${Math.floor(Number(data?.system?.uptime_seconds||0)/3600)} h ativo`);
-    set('system-memory',`${data?.system?.memory_used_mb ?? '—'} MB`);
-    set('system-load',data?.system?.cpu_load_1m ?? '—');
-    const safeRender=(name,fn)=>{try{fn();}catch(error){console.error(`C3D render ${name}:`,error);}};
-    safeRender('printers',()=>renderPrinters(latest.printers));
-    safeRender('spools',()=>renderSpools());
-    safeRender('production',()=>renderProduction(data?.production?.projects||[],data?.production?.jobs||[]));
-    safeRender('orders',()=>{renderOrders();renderOrderLibrarySelectors();renderOrderRemovalButtons();});
-    safeRender('library',()=>refreshLibraryFilePickers());
-  } catch(error) {
-    console.error('C3D update failed:',error);
-    const last=$('last-update'); if(last)last.textContent=`Erro de ligação: ${error?.message||'desconhecido'}`;
-    const dot=$('live-dot'); if(dot)dot.className='warning';
-  } finally { if(refresh)refresh.disabled=false; }
-}
+async function update() { $('refresh').disabled = true; try { const data = await api('/api/summary'); latest = { printers: data.printers.items, spools: data.spools.items, stock: data.spools.stock || [], assignments: data.assignments || {}, orders: data.production.orders || [], alarms: data.alarms || { active:[], history:[] }, smartQueue: data.smart_queue || [] }; $('printers-total').textContent = data.printers.total; $('printers-online').textContent = `${data.printers.online} online`; $('printers-printing').textContent = data.printers.printing; $('spools-total').textContent = data.spools.total; $('spools-low').textContent = data.spools.low ? `${data.spools.low} abaixo de 200 g` : 'Sem alertas'; $('live-dot').className = data.services.productionHub ? 'connected' : 'warning'; $('last-update').textContent = `Atualizado às ${new Date(data.generatedAt).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })}`; $('system-host').textContent = data.system.hostname; $('system-up').textContent = `${Math.floor(data.system.uptime_seconds / 3600)} h ativo`; $('system-memory').textContent = `${data.system.memory_used_mb} MB`; $('system-load').textContent = data.system.cpu_load_1m; renderPrinters(latest.printers); renderSpools(); renderProduction(data.production.projects, data.production.jobs); renderOrders(); renderOrderLibrarySelectors(); renderOrderRemovalButtons(); refreshLibraryFilePickers(); } catch { $('last-update').textContent = 'Não foi possível contactar os serviços'; $('live-dot').className = 'warning'; } finally { $('refresh').disabled = false; } }
 
 $('refresh').onclick = update;
 $('discover-printers').onclick = async () => { const button = $('discover-printers'); button.disabled = true; button.textContent = 'A analisar…'; try { renderDiscovery(await api('/api/printers/discover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subnet: $('discovery-subnet').value }) })); } catch (error) { toast(error.message, 'error'); } finally { button.disabled = false; button.textContent = 'Analisar rede local'; } };
@@ -1338,7 +1326,6 @@ populateFilaments(); refreshCustomers(); refreshFiles(); update().finally(async 
     try { await refreshSelectedProject(); } catch (error) { toast(error.message, 'error'); }
   }
 }); setInterval(() => update().finally(renderOverviewFromCurrent), 15000);
-
 
 setInterval(() => {
   const image = document.querySelector('img[data-bambu-camera]');
