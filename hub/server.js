@@ -2448,10 +2448,11 @@ function printerCameraUrl(printer) {
       return url;
     } catch { return null; }
   }
-  if (clean(printer?.type, 40).toLowerCase() !== 'klipper') return null;
+  const type = clean(printer?.type, 40).toLowerCase();
+  if (!['klipper', 'creality'].includes(type)) return null;
   const host = printerHost(printer);
   if (!host) return null;
-  return new URL(`http://${host}/webcam/?action=stream`);
+  return new URL(type === 'creality' ? `http://${host}:8080/?action=stream` : `http://${host}/webcam/?action=stream`);
 }
 function privateCameraHost(hostname) {
   const parts = String(hostname || '').split('.').map(Number);
