@@ -189,7 +189,7 @@ function printerWebAddress(printer) {
 }
 function printerCameraAddress(printer) {
   const configured = String(printer?.camera_url || '').trim();
-  const automatic = configured || ['klipper', 'bambu'].includes(String(printer?.type || '').toLowerCase());
+  const automatic = configured || ['klipper', 'bambu', 'creality'].includes(String(printer?.type || '').toLowerCase());
   return automatic && printer?.id ? `/api/printers/${encodeURIComponent(printer.id)}/camera` : '';
 }
 function printerCameraMarkup(printer) {
