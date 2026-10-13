@@ -22,6 +22,41 @@ Não requer Print Farm Manager nem Spoolman para funcionar. Os serviços antigos
 podem continuar instalados durante a migração, mas não são consultados nem
 alterados pelo Hub.
 
+## Timelapse por impressora (UI v0.7.1)
+
+Na página individual da impressora, o painel **Timelapse** permite ativar ou
+desativar a captura quando a integração expõe essa função. O Hub verifica o
+estado da máquina e guarda `timelapse_enabled` em `portal-state.json` apenas
+depois de a API confirmar a alteração. Registos antigos não têm preferência:
+abrir a página não altera a configuração existente da impressora.
+
+- **Klipper, Creality e Anycubic com Moonraker:** requer o componente
+  [moonraker-timelapse](https://github.com/mainsail-crew/moonraker-timelapse/blob/main/docs/configuration.md),
+  câmara, macros e renderização previamente configuradas. O Hub usa
+  `/machine/timelapse/settings`, preservando as restantes definições. A Creality
+  tenta as portas 7125 e 4408; um endereço com porta explícita tem prioridade.
+  Definições fixadas em `moonraker.conf` ficam bloqueadas na interface.
+  A alteração afeta a captura em curso; desligar também pode impedir a
+  renderização automática dessa impressão. Não recupera imagens já perdidas.
+- **OctoPrint:** usa a [API de timelapse](https://docs.octoprint.org/en/main/api/timelapse.html)
+  com `save: true`, para as próximas impressões. Preserva o modo anterior ao
+  desligar/reativar; sem modo anterior usa uma imagem a cada 10 segundos,
+  25 fps e sem post-roll. Requer permissões de consulta/administração de timelapse
+  e câmara/renderização configuradas no OctoPrint.
+- **Bambu LAN, PrusaLink, Elegoo e firmware sem API compatível:** o controlo fica
+  indisponível com uma explicação. Na Bambu, configura o timelapse no Bambu Studio
+  antes de enviar a impressão. A câmara LAN continua independente deste controlo.
+
+**Verificar estado** permite tentar novamente após uma falha. A preferência
+persiste após reiniciar o Hub e é apresentada separadamente do estado da máquina;
+se tiver sido alterado noutra interface, **Aplicar preferência guardada** permite
+reaplicá-la explicitamente. Não há comandos automáticos ao consultar o dashboard.
+Os vídeos são criados/armazenados pela integração nativa, não pelo Hub.
+
+Validação local: `npm install --prefix hub` e `npm test --prefix hub`.
+Os testes usam APIs simuladas; a gravação física e a reprodução dos streams na
+farm devem ser verificadas após instalar a alteração numa máquina compatível.
+
 ## Instalação
 
 ```bash

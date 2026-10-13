@@ -1334,6 +1334,15 @@ body.printer-editor-page .temperature-controls form{padding:9px}
 body.printer-editor-page .printer-secondary-panel{grid-column:1/-1}
 body.printer-editor-page .printer-danger-zone{grid-column:1/-1}
 @media(max-width:1050px){body.printer-editor-page .printer-workspace{grid-template-columns:1fr}body.printer-editor-page .printer-console-summary,body.printer-editor-page .printer-camera-panel,body.printer-editor-page .printer-control-panel,body.printer-editor-page .printer-secondary-panel,body.printer-editor-page .printer-danger-zone{grid-column:1}}
+.printer-timelapse-panel{grid-column:1/-1;padding:16px 18px;border:1px solid #2f3940;border-radius:8px;background:#111619}
+.printer-timelapse-panel h2{margin:4px 0}
+.printer-timelapse-panel p,.printer-timelapse-panel small{color:#aab6c4;line-height:1.5}
+.printer-timelapse-panel [role="switch"]{min-width:110px;min-height:44px;padding:9px 14px;border:1px solid #43515b;border-radius:6px;background:#24313b;color:#fff;font:inherit;font-weight:700;cursor:pointer}
+.printer-timelapse-panel [role="switch"]:focus-visible{outline:2px solid #f58220;outline-offset:3px}
+.printer-timelapse-panel [role="switch"][aria-checked="true"]{background:#18744e;color:#fff}
+.printer-timelapse-panel button:disabled{opacity:.55;cursor:wait}
+.timelapse-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.timelapse-actions [hidden]{display:none}
 /* denser fleet cards */
 .ops-overview .printer-list{grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:7px}
 .ops-overview .overview-printer-preview{height:104px}

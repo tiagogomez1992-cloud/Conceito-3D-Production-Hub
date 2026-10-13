@@ -11,6 +11,7 @@ const tls = require('tls');
 const zlib = require('zlib');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
+const { installTimelapseRoutes } = require('./timelapse');
 
 const app = express();
 const port = Number(process.env.PORT || 8080);
@@ -2438,6 +2439,8 @@ function streamBambuMjpeg(printer, req, res, snapshotOnly = false) {
     req.on('close', close);
   } catch (error) { fail(`Não foi possível iniciar a câmara Bambu: ${error.message || 'erro desconhecido'}`); }
 }
+
+installTimelapseRoutes(app, { client, state, save, getManagedPrinter, printerEndpoint });
 
 function printerCameraUrl(printer) {
   const configured = clean(printer?.camera_url, 500);
